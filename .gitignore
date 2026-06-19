@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+.installed.cfg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging / dependency managers
+.python-version
+poetry.lock
+.pdm.toml
+__pypackages__/
+
+# Testing / coverage
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.cache
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+credentials.json
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / local artifacts
+*.log
+logs/
+tmp/
