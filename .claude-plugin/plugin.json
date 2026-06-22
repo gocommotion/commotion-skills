@@ -1,0 +1,10 @@
+{
+  "name": "commotion",
+  "version": "0.1.0",
+  "description": "Commotion Agent Operations — Claude Skills that build, configure, and deploy voice/chat workers through the commotion MCP server. Skills orchestrate; the MCP server exposes the platform primitives.",
+  "author": { "name": "Commotion AI" },
+  "homepage": "https://github.com/gocommotion/commotion-skills",
+  "repository": "https://github.com/gocommotion/commotion-skills",
+  "license": "UNLICENSED",
+  "keywords": ["commotion", "voice-agents", "agent-operations", "mcp", "skills"]
+}

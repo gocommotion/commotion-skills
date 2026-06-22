@@ -1,0 +1,12 @@
+{
+  "name": "commotion-skills",
+  "owner": { "name": "Commotion AI" },
+  "plugins": [
+    {
+      "name": "commotion",
+      "source": "./",
+      "description": "Commotion Agent Operations — skills + the commotion MCP server to build, configure, and deploy voice/chat workers through Claude.",
+      "version": "0.1.0"
+    }
+  ]
+}

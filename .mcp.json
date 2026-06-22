@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "commotion": {
+      "type": "http",
+      "url": "https://commotion-mcp-default.dev3.gocommotion.com/mcp",
+      "headers": {
+        "Authorization": "Bearer dev-mcp-token"
+      }
+    }
+  }
+}
