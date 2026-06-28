@@ -74,8 +74,14 @@ workerVoiceSettingsRequest:
     provider: "<tts provider>"                 # REQUIRED — e.g. commotion-tts
     voiceId:  "<voice id>"                      # REQUIRED — a UUID
   workerTranscriptConfiguration: { provider, model, temperature, prompt }   # optional; defaults stand
-  workerLLMConfigurationRequest: { provider, model, temperature }            # optional; defaults stand
+  workerLLMConfigurationRequest: { provider, model, temperature, + fallback fields }  # the voice worker's LLM lives HERE
 ```
+
+**For a voice worker, the LLM (brain) AND its fallback model are configured in this voice block**
+(`workerLLMConfigurationRequest`) — this is the UI's *Voice Settings → LLM Settings → Provider /
+Model / Fallback Provider / Fallback Model*. Do NOT use `workerAdvancedSettingsRequest` on a voice
+worker (it's rejected). Inspect the exact fallback field names with `fetch_schema.sh AiWorkerRequest`
+(`WorkerVoiceSettingsRequest`). See `references/control-and-reliability.md` ("Models + fallback").
 
 **Verified-good en+hi block (mirror this — created + deployed live, S2S):** `provider:
 "commotion-tts"`, `model: "commotion-laya-v1-5"`, `voiceId:
@@ -95,3 +101,11 @@ Notes:
   `fetch_schema.sh AiWorkerRequest`, or the mismatched keys are silently dropped.
 - Multilingual workers also need a prompt line telling them to mirror the caller's language: the
   voice config lets them *speak* the language; the prompt makes them *choose* to.
+- **Don't switch language on English-spoken digits (verified live — bake into the prompt).** Stay in
+  the caller's spoken language and continue the WHOLE call in it. Treat a mobile number, policy
+  number, OTP, or amount **read out in English digits as normal data** — do **NOT** switch the
+  conversation language, and do **NOT** trigger the `Switch Language` built-in action, just because
+  numbers are spoken in English. Only switch when the caller actually changes their conversational
+  language. Without this rule the agent flips Hindi→English the moment the caller says their number in
+  English digits (observed live). See `references/tools-and-capabilities.md` for the
+  `switch_language` built-in.

@@ -12,9 +12,10 @@ companion to `aiworker-lifecycle.md`.
 | GET | `/aiagent/{id}?version=N` | one agent's full record |
 | POST | `/aiagent` | create an agent on a DRAFT worker (`AiAgentRequest`) |
 | POST | `/aiagent/standard` | create a *standard* agent, e.g. FAQ (`CreateStandardAgentRequest`) |
-| PUT | `/aiagent/{id}` | update — **enable** the default agent, tune instructions (`AiAgentRequest`) |
+| PUT | `/aiagent/{id}` | update — tune instructions / toggle `aiAgentEnabled` (`AiAgentRequest`) |
+| DELETE | `/aiagent/{id}?version=N` | delete an agent (the `version` query param is **required**) |
 
-(Delete is not exposed.) Body shapes: `fetch_schema.sh AiAgentRequest` / `CreateStandardAgentRequest`.
+Body shapes: `fetch_schema.sh AiAgentRequest` / `CreateStandardAgentRequest`.
 
 ## The golden rules (verified against dev3)
 
@@ -51,15 +52,21 @@ An agent's prompt only renders (and is editable) in the Commotion UI prompt edit
 `POST /aiworker/run`) but its **editor stays blank** — the editor's document is initialised at agent
 *create* time, and a `PUT` updates the runtime `instructions` without populating it. Diagnostic that
 proved it: one worker with a PUT-updated default agent and a POST-created agent — only the
-POST-created one rendered. Consequences:
-- A `SINGLE_AGENT` worker can only ever have the un-POST-able default agent → its prompt will **not**
-  be UI-visible/editable when set via API. To get a UI-visible, editable prompt, build the worker
-  **`MULTI_AGENT`** and `POST` the real agent (a thin orchestrator in `workerLevelPrompt` routes to
-  it). This is the recommended pattern for any worker whose prompt the client needs to see/edit.
+POST-created one rendered. So in **every** worker, POST the prompt-bearing agent — the only trick is
+freeing the slot:
+- **`SINGLE_AGENT` → delete the auto-default, then POST (verified live).** A direct POST is rejected
+  while the default exists (`400 "Single Agent setup allows only one agent"`), so:
+  `DELETE /aiagent/{defaultId}?version=0` (the `version` query param is **required** — without it:
+  `400 "version is required"`) → returns `true`, agent count drops to 0 → then `POST /aiagent` the
+  real agent with `instructions` + `aiAgentEnabled:true`. Its prompt renders + is editable. So a
+  single-agent worker CAN have a UI-visible prompt — you don't have to switch to MULTI_AGENT for that.
+- **`MULTI_AGENT` → disable (or delete) the default, then POST each specialist.** Each specialist is a
+  separate `POST /aiagent` with its own focused `instructions`; `workerLevelPrompt` is the orchestrator.
 - The empty editor box is otherwise **not** a sign of a missing prompt — `GET /aiagent/{id}`
   (`instructions`) + a `POST /aiworker/run` test are the source of truth, not the editor.
 - To revise a POST-created agent's prompt, edit it in the UI (syncs both) or re-`POST` a fresh agent
-  and disable the old one; a plain API `PUT` may update the runtime without refreshing the editor.
+  (delete the old via `DELETE /aiagent/{id}?version=N`); a plain API `PUT` may update the runtime
+  without refreshing the editor.
 
 **Voice worker default agent (verified live).** A voice worker's auto-provisioned default agent is
 named **"Voice Agent"** (chat workers get "Chat Agent") and starts disabled. The request field
@@ -77,8 +84,24 @@ no prompt — check `GET /aiagent/{id}` (`instructions`) and a test run, not the
 **Anti-hallucination (verified live).** An agent whose prompt says "call API X" but has **no tool
 wired** will *fabricate* the result rather than call anything — e.g. it declared a phone number "not
 registered" with nothing backing it. Naming an API in the prompt does not make the agent call it.
-Either wire the API as a tool (see `tools-and-capabilities.md`) or give the prompt an explicit rule:
-never state/assume a backend fact without a tool result; if you can't get it, say so and hand off.
+Worse (verified live): when the prompt says "call API 001" with no registered tool, the model
+**fabricates a generic `api_call(...)` tool**, the platform returns `function 'api_call' is not
+registered`, and the agent then **loops — re-asking for the same input** instead of failing. Two
+fixes, use both:
+1. **Wire each API as a real tool** and reference it by its **action name** (`[tool:rmn-check-228]`)
+   in the agent's `instructions` (see `tools-and-capabilities.md`) — so the agent calls a registered
+   tool, not a hallucinated `api_call`.
+2. **Give the prompt an explicit grounding rule** (keep it even after tools exist, for tool
+   failures/empty results): never state/assume a backend fact unless a tool actually returned it; if
+   you can't get it, say you can't verify and hand off / call back — never guess.
+
+**Don't re-ask for what's already given (verified live — bake into the prompt).** Once the caller HAS
+provided a detail, acknowledge it and move on — don't ask for the same thing again. (If they haven't
+actually given it, or it was unclear/incomplete, asking *once* is correct.) Call each tool **at most
+once per attempt**; on a tool error/empty result take the failure path **once** (can't-verify →
+transfer/callback) rather than looping back to re-ask for information you already have. This is the
+same loop the fabricated-`api_call` case triggers — the grounding rule and the call-once rule
+together keep the agent from spinning.
 
 ## The agent body (`AiAgentRequest`)
 

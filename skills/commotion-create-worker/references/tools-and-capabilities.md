@@ -53,11 +53,20 @@ Body shapes: `fetch_schema.sh <Name>` — `CreateCustomToolRequest`, `CreateBuil
 4. **The custom tool is an HTTP wrapper — there is no "code" mode.** `custom-tool` wraps an arbitrary
    HTTP API (url + method + headers + query + body). dev3 has **no** code-snippet/script tool today,
    despite the concept doc's wording — confirmed against the live schema.
-5. **HITL is in-band — on connector & MCP-server actions only (verified live).** Set `hitlMode`
+5. **Every API the flow calls MUST be a registered tool — naming it in the prompt does NOT call it
+   (verified live).** A prompt that says "call API 001" with no registered tool makes the model
+   **fabricate a generic `api_call(...)`**; the platform returns `function 'api_call' is not
+   registered`, and the agent **loops, re-asking for the same input**. The fix: register each API as a
+   `custom-tool` (`POST /ai-worker-tool/custom-tool`) and reference it by its **action name**
+   (`[tool:rmn-check-228]`) in the agent's `instructions` — read the action name from
+   `GET /ai-worker-tool?aiWorkerId=…&version=…` → `actionMetaDataOutputList[].actionName`. Keep the
+   prompt's anti-hallucination/grounding rule (see `agents-and-orchestration.md`) even after the tool
+   exists, for tool failures and empty results.
+6. **HITL is in-band — on connector & MCP-server actions only (verified live).** Set `hitlMode`
    (`AUTO_RUN` | `REQUIRE_APPROVAL` | `ASK_FOR_DETAILS`) on a connector/MCP action in the create body;
    **built-in actions have no `hitlMode`** (a custom tool's auto-generated action exposes the slot but
    it isn't an input on create). A paused run resumes with `POST /aiworker/continue` (see below).
-6. **Show every write before you make it.** Same rule as the rest of the skill — summarise the tool
+7. **Show every write before you make it.** Same rule as the rest of the skill — summarise the tool
    you're about to attach (and especially any `REQUIRE_APPROVAL` action) and get a yes.
 
 ## Picking the kind

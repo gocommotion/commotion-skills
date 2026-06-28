@@ -82,6 +82,7 @@ endpoint is occasionally flaky). Use this to evaluate prompt adherence and hallu
 | POST | `/aiagent` | create agent on a draft worker | `AiAgentRequest` |
 | POST | `/aiagent/standard` | create a *standard* agent (e.g. FAQ) | `CreateStandardAgentRequest` |
 | PUT | `/aiagent/{id}` | update agent (enable it, set instructions) | `AiAgentRequest` |
+| DELETE | `/aiagent/{id}?version=N` | delete an agent (`version` query param required) | — |
 
 ### Knowledge & files
 | Method | Path | Purpose | Schema |

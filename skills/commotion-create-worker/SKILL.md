@@ -21,8 +21,14 @@ HTTP calls to the dev3 backend (through the Kong gateway). There is **no MCP ser
 carries the endpoints, and you fetch request schemas live from the OpenAPI spec. Every write to the
 platform is **shown to the user and approved before it happens**.
 
-A worker is a container; the actual conversational behaviour lives in its **agent(s)**. So creating
-a working worker is two things: configure the worker, then provision + **enable** its agent(s).
+A worker is the **orchestrator** that holds and routes to its **agent(s)** — the actual
+conversational behaviour lives in the agents. So creating a working worker is two things: configure
+the worker (orchestration, voice, guardrails), then provision + **enable** its agent(s).
+
+**Deploy is never automatic.** Going live is an explicit, user-gated step: always ask the user with
+`AskUserQuestion` and get a clear "yes" before `deploy` (Phase 10). Drafting/creating/editing on a
+draft is fine to do as you go (each write shown), but **never deploy a worker live without
+confirmation.**
 
 ## When to use this
 
@@ -96,23 +102,28 @@ for what you can't infer — `AskUserQuestion`, batched, few.
 
 ## Phase 2 — Choose the setup type
 
-- **`SINGLE_AGENT`** (default) — one agent handles everything. Simplest; use unless the goal clearly
-  splits into distinct sub-skills.
-- **`MULTI_AGENT`** — several specialist agents collaborate; the worker's `workerLevelPrompt` acts as
-  the **orchestrator** that routes each request to the right agent.
+**Infer the setup type from the use case — the user will rarely say "multi-agent".** Read the goal
+and decide whether the work splits into distinct, specialised responsibilities. If it does, prefer
+**`MULTI_AGENT`** so each agent owns its specialty and does it well (a billing agent, a renewal
+agent, an FAQ agent, …) instead of one giant prompt trying to do everything. Use one agent only when
+the work genuinely is a single responsibility. **When you're unsure how to split it, ask the user**
+(`AskUserQuestion`).
+
+- **`MULTI_AGENT`** — specialist agents collaborate; the worker's `workerLevelPrompt` is the
+  **orchestrator** that routes each request to the right agent. Each specialist is a separate,
+  focused prompt.
+- **`SINGLE_AGENT`** — one agent owns the whole job. Simplest, but one prompt carries everything.
 - **`WORKFLOW`** — a fixed, predefined sequence of steps.
 
 Tell the user which you chose and why. (Setup type is changeable later, but only while the worker is
 a draft — see the lifecycle reference.)
 
-**If the user needs the prompt visible/editable in the UI, prefer `MULTI_AGENT` even for a single
-flow (verified live).** A `SINGLE_AGENT` worker only has the auto-provisioned default agent, whose
-prompt — when set via API `PUT` — runs at runtime but **never renders in the UI prompt editor** (the
-editor doc is initialised at agent *create*, and only a `POST /aiagent` populates it). So for a
-single flow that must be UI-editable, build `MULTI_AGENT` with a thin orchestrator (`workerLevelPrompt`
-routes everything to the one specialist) and **`POST` the specialist agent** with the full prompt
-(Phase 6), disabling the default. See `references/agents-and-orchestration.md` ("POST-create the
-prompt-bearing agent").
+Choose the setup type purely on the **use case** (above) — prompt visibility no longer forces the
+choice. In **both** setups you make the prompt UI-visible the same way: by **`POST`-creating** the
+prompt-bearing agent (only POSTed agents render in the editor; a PUT-updated default stays blank). The
+only difference is freeing the slot (Phase 6): for `SINGLE_AGENT`, **delete the auto-default then POST**
+the one agent; for `MULTI_AGENT`, disable the default and POST each specialist. See
+`references/agents-and-orchestration.md` ("POST-create the prompt-bearing agent").
 
 **Structured output** is a `SINGLE_AGENT` variant: when the goal is to **return a strict, parseable
 shape** for a downstream system to consume (not hold a conversation), set `structuredOutputEnabled:
@@ -142,14 +153,27 @@ Build a candidate `AiWorkerRequest` grounded in Phase 0. Write it to a temp file
   action — just because numbers are spoken in English. Only switch when the caller actually changes
   their conversational language. (Verified live: without this, the agent flips Hindi→English the
   moment the caller says their number in English.) Exact voice-block path in `references/aiworker-lifecycle.md`.
-- **Guardrails** (`guardrailConfigRequest`) — propose sensible safety filters for the domain, grounded
-  in `/aiworker/metadata`: **toxicity** (inbound + outbound, the four categories at sensible
-  thresholds), **PII** (Commotion detector, `MASK` or `REDACT`), **forbidden words** (+ a fallback
-  response), and optional **custom** checks. They apply in a fixed backend order — you don't set order.
-- **Fallback models** — a primary + 1–2 ordered fallbacks (from `/aimodel`) + `numberOfRetries`, so a
-  provider hiccup doesn't take the worker down. **Chat only** (verified): set on a chat worker
-  (`workerAdvancedSettingsRequest`) or a `CHAT_AGENT` member's `advancedSettingsRequest`; a voice worker
-  rejects worker advanced settings, and a `VOICE_AGENT` rejects advanced settings entirely.
+- **Guardrails** (`guardrailConfigRequest`) — **design them from the use case, don't apply a generic
+  set.** Think about what THIS domain handles and protect it, grounded in `/aiworker/metadata`:
+  - Handles personal/financial data (insurance, banking, healthcare)? → **PII masking** (Commotion
+    detector) plus **regex masking** for the specific sensitive fields it sees (card numbers, account
+    numbers, Aadhaar/SSN, policy numbers) with `MASK`/`REDACT`.
+  - Company/brand context? → **forbidden words** for competitor names, internal/confidential terms,
+    off-limits topics (+ a fallback response).
+  - Any customer-facing bot → **toxicity** inbound + outbound (the four categories at sensible
+    thresholds), and **custom checks** for domain rules (e.g. "never give medical/financial advice").
+  Pick the subset the use case warrants and justify each to the user. They apply in a fixed backend
+  order — you don't set order. (e.g. a banking assistant → PII + card/account masking + competitor
+  forbidden words + toxicity + a "no financial advice" custom check.)
+- **Models + fallback** — choose the primary model and an ordered fallback so a provider hiccup
+  doesn't take the worker down. **Where this lives depends on channel (verified live):** a **voice**
+  worker sets its LLM provider/model **and its fallback** in the **Voice Settings** block
+  (`workerVoiceSettingsRequest.workerLLMConfigurationRequest` + the voice-settings fallback fields —
+  this is the "LLM Settings → Fallback Provider/Model" you see under Voice Settings in the UI), NOT in
+  `workerAdvancedSettingsRequest` (which a voice worker / `VOICE_AGENT` rejects). A **chat** worker
+  sets primary + `workerFallbackModelConfigurationRequestList` + `numberOfRetries` in
+  `workerAdvancedSettingsRequest`, or on a `CHAT_AGENT` member's `advancedSettingsRequest`. Get codes
+  from `/aimodel`. See `references/control-and-reliability.md`.
 - **Structured output** — if chosen in Phase 2, set `structuredOutputEnabled: true` here (the agent's
   schema is configured in Phase 6).
 
@@ -166,9 +190,11 @@ Build a candidate `AiWorkerRequest` grounded in Phase 0. Write it to a temp file
   tool (Phase 8) and reference it by its action name** (`[tool:rmn-check-228]`) in the prompt, so the
   agent calls a real registered tool. Until tools are wired, the grounding rule keeps it honest. Keep
   the rule even after tools exist, for tool failures/empty results.
-- **Don't re-ask (bake into the prompt).** Tell the agent: never ask for the same information twice;
-  once a detail is given, acknowledge and move on; call each tool at most once per attempt; on a tool
-  error/empty result, take the failure path ONCE (can't-verify → transfer/callback) — never loop.
+- **Don't re-ask for what's already given (bake into the prompt).** Once the caller HAS provided a
+  detail, acknowledge it and move on — don't ask for the same thing again. (If the caller hasn't
+  actually given it, or it was unclear/incomplete, asking — once — is correct.) Call each tool at most
+  once per attempt; on a tool error/empty result, take the failure path ONCE (can't-verify →
+  transfer/callback) rather than looping back to re-ask for information you already have.
 
 Shapes, valid values, and worked examples for guardrails / fallback / structured output are in
 `references/control-and-reliability.md`.
@@ -192,32 +218,29 @@ on a voice worker** (verified live; its `agentType` starts `null`). (A draft isn
 
 ## Phase 6 — Provision + enable the agent(s)  ← the step people miss
 
-Agents can only be created/edited while the worker is a **DRAFT**. List what's there with
-`GET /aiagent?workerId=$WORKER_ID&version=0`, then:
+Agents can only be created/edited while the worker is a **DRAFT**. **Golden rule (verified live):**
+the prompt only renders/edits in the UI for agents created via **`POST /aiagent`**. PUT-updating the
+auto-provisioned default sets `instructions` for the runtime but leaves the editor blank. So in BOTH
+setups you **POST** the prompt-bearing agent — the only difference is making room for it. List what's
+there first: `GET /aiagent?workerId=$WORKER_ID&version=0`.
 
-- **`SINGLE_AGENT`** — there is exactly one agent (the default) and there can only ever be one.
-  `PUT /aiagent/{agentId}` (full PUT — resend `aiWorkerId`, `version`, `name`, `description`) sets
-  `"aiAgentEnabled": true` (the deploy gate) and **puts the detailed prompt / flow logic in
-  `instructions`** (keep `workerLevelPrompt` concise). The request `agentType` is echoed back as
-  **`aiAgentType`** (the `agentType` key is request-only and reads back `null`); `VOICE_AGENT` sticks.
-  ⚠️ **The default agent's prompt set this way drives the runtime but will NOT render in the UI prompt
-  editor** (verified live) — if the client needs to see/edit the prompt, you must instead build the
-  worker `MULTI_AGENT` and **`POST`** the prompt-bearing agent (see the `MULTI_AGENT` bullet below and
-  `references/agents-and-orchestration.md`, "POST-create the prompt-bearing agent").
-- **POST-created agents render; PUT-updated defaults don't (verified live).** For a UI-visible,
-  editable prompt — even for a single conversational flow — make the worker `MULTI_AGENT`, disable the
-  auto-default (`PUT … aiAgentEnabled:false`), and `POST /aiagent` the real agent with the full prompt
-  in `instructions`. To later revise it, edit in the UI (syncs both) or re-`POST` a fresh agent and
-  disable the old; a plain API `PUT` updates the runtime but may not refresh the editor.
-- **`MULTI_AGENT`** — enable the default agent (`PUT /aiagent/{defaultAgentId}`), and add specialists
-  with `POST /aiagent` (body: `{aiWorkerId, version, name, description, agentType, instructions,
-  aiAgentEnabled: true}`). The worker's orchestrator prompt (Phase 3) routes to them.
+- **`SINGLE_AGENT`** — delete the auto-default, then POST the real agent into the freed slot:
+  ```bash
+  DEF=$(bash "$SCRIPTS/commotion_api.sh" GET "/aiagent?workerId=$WORKER_ID&version=0" | jq -r '.[0].id')
+  bash "$SCRIPTS/commotion_api.sh" DELETE "/aiagent/$DEF?version=0"          # version=0 is REQUIRED
+  bash "$SCRIPTS/commotion_api.sh" POST   /aiagent @/tmp/agent.json          # body below, aiAgentEnabled:true
+  ```
+  (POSTing before the delete fails: `400 "Single Agent setup allows only one agent"`.) The POSTed
+  agent's prompt renders + is editable. Agent body: `{aiWorkerId, version:0, name, description,
+  agentType, instructions, aiAgentEnabled:true}`. The request `agentType` echoes back as `aiAgentType`
+  (the `agentType` key reads back `null` — that's normal; the type still sticks).
+- **`MULTI_AGENT`** — disable the auto-default (`PUT /aiagent/{defaultId}` `aiAgentEnabled:false`, or
+  delete it as above), then `POST /aiagent` each specialist with its own focused `instructions` +
+  `aiAgentEnabled:true`. The worker's `workerLevelPrompt` (Phase 3) is the orchestrator that routes to them.
 
-```bash
-bash "$SCRIPTS/commotion_api.sh" GET "/aiagent?workerId=$WORKER_ID&version=0" | tee /tmp/agents.json
-AGENT_ID=$(jq -r '.[0].id' /tmp/agents.json)
-bash "$SCRIPTS/commotion_api.sh" PUT "/aiagent/$AGENT_ID" @/tmp/agent.update.json
-```
+Either way: **put the full prompt in the POSTed agent's `instructions`; keep `workerLevelPrompt`
+concise.** To later revise a POSTed agent's prompt, edit it in the UI (syncs the editor) or re-`POST`
+a fresh agent (delete/disable the old) — a plain `PUT` updates the runtime but may not refresh the editor.
 
 **Structured-output agent (strict parseable shape).** If you set `structuredOutputEnabled: true`
 (Phase 3), the default agent is auto-born as **`STRUCTURED_OUTPUT`** (disabled) — verified live.
@@ -268,11 +291,25 @@ agent's `instructions`: `PUT /aiagent/{agentId}` with `{..., instructions: "<pro
 search the knowledge base>\n\n[knowledge:<knowledge name>|id:<knowledgeId>]"}`. There is no separate
 agent↔knowledge field. See `references/knowledge-and-rag.md` ("Binding knowledge to an agent").
 
-## Phase 8 — Attach tools (optional — when the worker needs to act)
+## Phase 8 — Attach tools (think hard about what should be a tool)
 
-Skip this if the worker just talks. Otherwise give it capabilities — the full per-kind recipes, the
-body shapes, HITL, and the projection model are in `references/tools-and-capabilities.md`. Tools
-attach to the **draft** worker (body carries `aiWorkerId` + `version`), so do this before the deploy gate.
+Don't treat this as "skip unless the worker obviously acts." **Actively work out what the worker
+should NOT be doing in the prompt and turn that into tools** — every lookup, status check, link
+generation, record write, or external call belongs in a tool, so the prompt orchestrates and the
+tools do the work (the prompt shouldn't carry data or fake results). **When you're unsure whether
+something should be a tool, ask the user.**
+
+- **Every API the flow calls MUST be a registered tool — never let the agent "call an API" from the
+  prompt.** Naming an API in the prompt (e.g. "call API 001") does NOT make a call: the model
+  fabricates a generic `api_call(...)`, the platform returns `function 'api_call' is not registered`,
+  and the agent loops (verified live). Register each API as a `custom-tool` (`POST
+  /ai-worker-tool/custom-tool`) and reference it by its **action name** (`[tool:rmn-check-228]`) in the
+  agent's `instructions`. Read each tool's action name from
+  `GET /ai-worker-tool?aiWorkerId=…&version=…` → `actionMetaDataOutputList[].actionName`.
+
+The full per-kind recipes, body shapes, HITL, and the projection model are in
+`references/tools-and-capabilities.md`. Tools attach to the **draft** worker (body carries
+`aiWorkerId` + `version`), so do this before the deploy gate.
 
 - **Decide what it must do**, and map each need to a kind: a platform built-in (end call, transfer) →
   `POST /ai-worker-tool/built-in-actions` (codes from `GET /ai-worker-tool/metadata`); an arbitrary
@@ -319,16 +356,19 @@ Confirm with `GET /aiagent?workerId=$WORKER_ID&version=0` before deploying:
   indexing/failed), so the worker actually grounds on it from the first live conversation.
 - If you attached tools (Phase 8) → `GET /ai-worker-tool?aiWorkerId=$WORKER_ID&version=0` shows them as expected.
 
-## Phase 10 — Deploy  ·  HUMAN INPUT REQUIRED
+## Phase 10 — Deploy  ·  ALWAYS ASK FIRST
 
-On approval and once readiness passes:
+**Never deploy without an explicit user "yes".** Once readiness passes, summarise what will go live
+and ask with `AskUserQuestion` (e.g. "Deploy this worker live now?" — Deploy now / Keep as draft).
+Only on a clear yes:
 
 ```bash
 bash "$SCRIPTS/commotion_api.sh" POST "/aiworker/$WORKER_ID/deploy?version=0"
 ```
 
-A fresh worker's first deploy is **version 0**. (To only persist a draft without going live, use
-`POST "/aiworker/$WORKER_ID/draft?version=0"`.)
+A fresh worker's first deploy is **version 0**. If the user is not ready, leave it as a draft (you
+can persist a draft without going live with `POST "/aiworker/$WORKER_ID/draft?version=0"`). Deploying
+is the one irreversible-feeling step for the user — gating it on confirmation is mandatory, not optional.
 
 ## Phase 11 — Confirm live
 

@@ -1,5 +1,46 @@
 # Changelog
 
+## 2026-06-28 — 0.3.5 — Single-agent prompts CAN render (delete-default-then-POST)
+
+Found + verified live: a `SINGLE_AGENT` worker *can* have a POST-created (UI-rendering, editable)
+prompt after all — you just delete the auto-provisioned default first.
+
+- **Recipe:** `DELETE /aiagent/{defaultId}?version=0` (the `version` query param is **required**) →
+  agent count 0 → `POST /aiagent` the real agent with `instructions` + `aiAgentEnabled:true`. Its
+  prompt renders + is editable. (A direct POST while the default exists is rejected with
+  `"Single Agent setup allows only one agent"`.)
+- **Setup type is now a pure use-case decision** (single vs multi based on whether the work splits),
+  no longer forced toward MULTI_AGENT for prompt visibility. In BOTH setups you POST the
+  prompt-bearing agent; the only difference is freeing the slot — single: delete the default; multi:
+  disable the default + POST each specialist.
+- Updated SKILL.md (Phases 2/6), `agents-and-orchestration.md` (+ `DELETE /aiagent/{id}?version=N`
+  in the endpoint tables and `api-and-auth.md`), and the saved memory.
+
+## 2026-06-28 — 0.3.4 — Skill refinements from user review
+
+- **Deploy is always user-gated** — added an explicit `AskUserQuestion` confirmation requirement to
+  the intro and Phase 10; never deploy live without a clear "yes".
+- **Setup type is inferred, not defaulted** — Phase 2 now tells the model to read the use case and
+  prefer `MULTI_AGENT` when the work splits into specialised responsibilities (the user won't say
+  "multi-agent"); ask when unsure. Worker reframed as the **orchestrator** of its agents.
+- **Single-agent POST is blocked (verified live)** — `POST /aiagent` on a `SINGLE_AGENT` worker →
+  `400 "Single Agent setup allows only one agent"`. So a UI-visible/editable prompt requires
+  `MULTI_AGENT` + a POST-created agent (a single flow = one specialist + thin orchestrator). Updated
+  Phases 2/6 and the agents reference.
+- **Models + fallback for voice corrected** — a voice worker's LLM **and its fallback** live in the
+  **Voice Settings** block (`workerVoiceSettingsRequest.workerLLMConfigurationRequest`), shown in the
+  UI as *Voice Settings → LLM Settings → Fallback Provider/Model* — not `workerAdvancedSettingsRequest`
+  (which voice rejects). Fixed `control-and-reliability.md` and `aiworker-lifecycle.md` (previously
+  wrongly said "fallback is chat-only").
+- **Guardrails are designed from the use case** — Phase 3 and the reference now derive guardrails per
+  domain (e.g. banking → PII + card/account masking + competitor forbidden words + toxicity +
+  no-advice custom check), not a fixed template.
+- **Tools phase reframed** — Phase 8 now says to actively decide what belongs in tools so the prompt
+  doesn't do the heavy lifting (ask when unsure), and restates that **every API must be a registered
+  tool** (naming an API in the prompt makes the model fabricate `api_call` and loop).
+- **Anti-repetition refined** — don't re-ask for info **already given**; re-asking once for info that
+  wasn't actually provided (or was unclear) is fine.
+
 ## 2026-06-26 — 0.3.3 — UI rendering, tools, language & repetition (HDFC ERGO live test)
 
 Learnings from the user testing the HDFC worker in the Commotion UI:

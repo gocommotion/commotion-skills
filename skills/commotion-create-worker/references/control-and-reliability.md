@@ -23,7 +23,12 @@ agent side lives in `agents-and-orchestration.md`; this file is the worker-confi
 
 ## Guardrails — `AiWorkerRequest.guardrailConfigRequest`
 
-Four independent blocks (set any subset; the ticket's floor is toxicity + PII + forbidden words):
+**Design guardrails from the use case — not a fixed template.** Look at what the domain handles and
+protect exactly that: a banking/insurance/health bot → PII masking + regex masking for card/account/
+Aadhaar/policy numbers; a brand bot → forbidden words for competitors and confidential terms; any
+customer-facing bot → toxicity in+out, plus custom checks for domain rules ("no financial/medical
+advice"). Pick the subset the use case warrants and justify each. Four independent blocks (set any
+subset):
 
 **Toxicity** — `toxicityDetectionConfigRequest` with `inboundMessagesConfiguration` and
 `outboundMessagesConfiguration`, each:
@@ -46,17 +51,25 @@ standardFallbackResponse, forbiddenWords:[…] }]`.
 `outboundCustomGuardrailConfigs`, each `{name, description, positiveExample, negativeExample,
 fallbackResponse}` (an LLM-judged rule in plain language).
 
-## Fallback models — chat only (verified live)
+## Models + fallback — where they live depends on channel (verified live)
 
-**Fallback models are a chat-side feature** — verified live, they are rejected on voice:
-- Worker-level on a voice worker → `400 "Worker advanced settings can not be provided when
-  voiceEnabled is true."`
-- On a `VOICE_AGENT` → `400 "Advanced settings is not supported for VOICE_AGENT type."`
+The **primary model and its fallback both exist for voice and chat — but in different blocks.** The
+trap is only `workerAdvancedSettingsRequest`: a voice worker rejects it.
 
-So set fallback on a **chat worker** (`voiceEnabled:false`, worker LM settings) or on a **`CHAT_AGENT`**
-member (agent LM settings — works even inside a voice-enabled multi-agent worker). A voice worker's
-voice agents use the voice LLM (`workerLLMConfigurationRequest`) and have no fallback list.
+**Voice worker — set the LLM + fallback in the Voice Settings block, NOT advanced settings.** In the
+UI this is *Voice Settings → LLM Settings*: Provider, Model, **Fallback Provider / Fallback Credential
+/ Fallback Model**, Temperature. Over the API these live under
+`workerVoiceSettingsRequest.workerLLMConfigurationRequest` (provider/model/temperature) plus the
+voice-settings fallback fields — fetch the exact field names with `fetch_schema.sh AiWorkerRequest`
+(inspect `WorkerVoiceSettingsRequest` / `workerLLMConfigurationRequest`). Do **NOT** put a voice
+worker's models in `workerAdvancedSettingsRequest`:
+- `workerAdvancedSettingsRequest` on a voice worker → `400 "Worker advanced settings can not be
+  provided when voiceEnabled is true."`
+- `advancedSettingsRequest` on a `VOICE_AGENT` → `400 "Advanced settings is not supported for
+  VOICE_AGENT type."`
+So a voice worker DOES get a fallback model — configure it in Voice Settings, not advanced settings.
 
+**Chat worker — set primary + fallback in advanced settings.**
 `workerAdvancedSettingsRequest.workerLanguageModelSettingsRequest` (chat worker):
 `{ maximumOutputTokens, temperature,
    workerLanguageModelConfigurationRequest:{modelCode, providerCode},   // the PRIMARY
