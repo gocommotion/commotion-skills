@@ -22,6 +22,11 @@
 #   KONG_BACKEND_URL      default https://apigw.dev3.gocommotion.com
 #   KONG_API_KEY_HEADER   default apikey
 #   KONG_ROUTE_SELECTOR   default demo_workspace
+#   COMMOTION_ENV_FILE    default ${TMPDIR:-/tmp}/commotion-mcp/session.env
+#
+# If KONG_API_KEY is not already in the environment, the KONG_* vars are loaded from
+# COMMOTION_ENV_FILE — the session-only credentials file the skill writes in Step 0 (the user
+# pastes their key once per session). An exported var / local .env still takes precedence.
 #
 # On a non-2xx response it prints the backend body and exits non-zero (curl --fail-with-body),
 # surfacing the status + message the way the MCP server's tool_error did.
@@ -37,12 +42,22 @@ path="${2:-}"
 body="${3-}"
 [[ -n "$method" && -n "$path" ]] || usage
 
+# Load session credentials (KONG_*) only if the key isn't already in the environment, so an
+# exported var / local .env keeps precedence. The skill writes this file in Step 0 (mode 600).
+cred_file="${COMMOTION_ENV_FILE:-${TMPDIR:-/tmp}/commotion-mcp/session.env}"
+if [[ -z "${KONG_API_KEY:-}" && -f "$cred_file" ]]; then
+  set -a
+  . "$cred_file"
+  set +a
+fi
+
 base="${KONG_BACKEND_URL:-https://apigw.dev3.gocommotion.com}"
 key_header="${KONG_API_KEY_HEADER:-apikey}"
 route="${KONG_ROUTE_SELECTOR:-demo_workspace}"
 
 if [[ -z "${KONG_API_KEY:-}" ]]; then
-  echo "error: KONG_API_KEY is not set (the Kong api-key for dev3)" >&2
+  echo "error: KONG_API_KEY is not set — run Step 0 to provide the Kong api-key for this session" \
+       "(written to ${cred_file}), or export KONG_API_KEY / set it in .env" >&2
   exit 2
 fi
 case "$path" in

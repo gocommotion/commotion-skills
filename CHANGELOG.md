@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-06-29 — 0.3.6 — Prompt for the Kong api-key at session start (no committed/embedded key)
+
+The skill no longer needs a committed `.env` or an embedded secret — it asks the user for the Kong
+api-key as its **first step** and keeps it for the session only.
+
+- **SKILL.md:** added **Step 0 — Provide the API key** (before Phase 0): ask via `AskUserQuestion`,
+  write it to `${TMPDIR:-/tmp}/commotion-mcp/session.env` with `umask 077` (never printed), then
+  smoke-test with `GET /aimodel`. Removed the old `.env`-sourcing setup line and the now-redundant
+  prerequisites bullet.
+- **`scripts/commotion_api.sh`:** auto-loads `COMMOTION_ENV_FILE` (default the session file above)
+  when `KONG_API_KEY` isn't already in the environment, so the key set once in Step 0 reaches every
+  call (each Bash invocation is a fresh shell). An exported var / local `.env` still takes precedence;
+  the not-set error now points at Step 0.
+- **`.env.example`:** documented that `.env` is now optional (Step 0 is the default path).
+- Security: the key lives only in the session temp file (mode 600) + conversation context — never
+  committed, never embedded in the bundle. Bumped `plugin.json` / `marketplace.json` to 0.3.6.
+
 ## 2026-06-28 — 0.3.5 — Single-agent prompts CAN render (delete-default-then-POST)
 
 Found + verified live: a `SINGLE_AGENT` worker *can* have a POST-created (UI-rendering, editable)
