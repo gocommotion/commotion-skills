@@ -46,11 +46,34 @@ once at the start of a session:
 # back to the repo's scripts/ — that's two levels up from this skill's Base directory (shown above),
 # i.e. <repo>/scripts. Set SCRIPTS to that absolute path (substitute the real clone path):
 SCRIPTS="${CLAUDE_PLUGIN_ROOT:-/absolute/path/to/commotion-skills}/scripts"
-# KONG_API_KEY must be set — from the plugin/repo .env or your shell environment:
-set -a; . "${CLAUDE_PLUGIN_ROOT:-.}/.env" 2>/dev/null || true; set +a
 ```
 
 > Do not use `${CLAUDE_PLUGIN_ROOT:?…}` — from a clone that variable is empty and would hard-fail.
+
+### Step 0 — Provide the API key (do this first, before Phase 0)
+
+The helper scripts authenticate with a Kong api-key, and **this skill does not ship one**. Before
+any other work, get it from the user and store it for this session only:
+
+1. Ask the user for their Commotion **Kong api-key** with `AskUserQuestion` (and, *only* if their
+   workspace isn't the default `demo_workspace`, the route selector). Say it's used only for this
+   session and isn't saved.
+2. Write it to the session credentials file with restricted permissions, substituting the value the
+   user gave — and **never print the key** (no `echo`/`cat` of it, don't repeat it back):
+   ```bash
+   mkdir -p "${TMPDIR:-/tmp}/commotion-mcp"
+   ( umask 077; printf 'KONG_API_KEY=%s\n' '<the key the user provided>' \
+       > "${TMPDIR:-/tmp}/commotion-mcp/session.env" )
+   # only if the user gave a non-default workspace, also append:
+   #   printf 'KONG_ROUTE_SELECTOR=%s\n' '<value>' >> "${TMPDIR:-/tmp}/commotion-mcp/session.env"
+   ```
+   `commotion_api.sh` auto-loads this file on every call, so you set it once. (An already-exported
+   `KONG_API_KEY` or a local `.env` still takes precedence — handy for repeated local runs.)
+3. **Smoke-test it:** `bash "$SCRIPTS/commotion_api.sh" GET /aimodel` should return the model list. A
+   401/403 means the key is wrong — ask again. Do not start Phase 0 until this passes.
+
+> The key lives only in this session's temp file (mode 600) and the conversation context — it is
+> never committed, never written to `.env` by the skill, and never embedded in the skill bundle.
 
 - **Make a call** — `bash "$SCRIPTS/commotion_api.sh" <METHOD> <PATH> [BODY]`. It injects the Kong
   base URL + auth headers (`apikey`, `X-Route-Selector`) so you only supply method + path + body.
@@ -61,8 +84,6 @@ set -a; . "${CLAUDE_PLUGIN_ROOT:-.}/.env" 2>/dev/null || true; set +a
   `/v3/api-docs/public` **once per session** (cached) and prints the named schema bundled with its
   `$defs`. Re-use it; **never invent a field that isn't in the schema.**
 - **Capture ids** from responses with `jq` (e.g. `... | jq -r '.id'`).
-- **Prerequisites / connectivity smoke** — `KONG_API_KEY` must be set (see `.env.example`). Verify:
-  `bash "$SCRIPTS/commotion_api.sh" GET /aimodel` should return the model list.
 
 The full endpoint map, header contract, error semantics, and schema-name list are in
 `references/api-and-auth.md` — the single "how to call it" reference. Field *shapes* always come

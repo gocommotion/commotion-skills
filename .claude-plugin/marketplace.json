@@ -8,7 +8,7 @@
       "name": "commotion",
       "source": "./",
       "description": "Commotion Agent Operations \u2014 skills that build, configure, and deploy voice/chat workers by calling the Commotion dev3 backend directly over HTTP.",
-      "version": "0.3.5"
+      "version": "0.3.6"
     }
   ]
 }
