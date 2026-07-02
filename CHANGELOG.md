@@ -1,5 +1,99 @@
 # Changelog
 
+## 2026-07-02 — 0.5.0 — Add the `commotion-quality-loop` orchestrator (single entry point)
+
+The four skills were independent — chaining relied on the model following the "step N of the loop"
+prose. Added a thin **coordinator** skill so the whole pipeline runs from one request, with the
+iterate-until-threshold control flow owned in one place.
+
+- **`commotion-quality-loop`** — the end-to-end orchestrator. Triggers on compound requests ("build a
+  voice bot for X and make it pass 90%", "test and improve my worker until 80%") and **invokes the four
+  specialists in order via the `Skill` tool** (`allowed-tools` now includes `Skill`): ensure a deployed
+  **voice** worker (build via create-worker if needed) → generate-scenarios → run-evals (baseline) →
+  improve-worker (loops on a draft until `passRate ≥ threshold` or max rounds) → deploy on approval. It
+  carries shared state (worker id, version, scenario ids, SIM_ID, pass-rate, threshold, max rounds)
+  between steps and owns the threshold/max-rounds/deploy gates; it does **not** duplicate the
+  specialists' internals.
+- **Routing:** compound "whole loop" requests → the coordinator; single-step requests → the specialist
+  directly. Added a "for the full loop, use `commotion-quality-loop`" pointer to each specialist's
+  "When to use this", and listed the coordinator as the entry point in the README.
+- Enforces the live-verified prerequisite up front (a **deployed voice** worker) so the loop doesn't
+  start against a chat/never-deployed worker that can't be simulated. Bumped to 0.5.0.
+
+## 2026-07-01 — 0.4.1 — Live-test hardening of the quality-loop skills (dev3)
+
+Dogfooded the full loop end-to-end on a real dev3 worker (`Acme Support Triage`): built it, generated
+personas + scenarios, ran voice simulations, drove an improve round (ETA-gap scenario `0%→100%` after
+a prompt edit), added Hindi/English language switching, and populated eval-metrics. Folded every
+backend behavior the live run surfaced into the skills.
+
+- **Evals/simulations are VOICE-ONLY, and need a deployed worker.** A chat worker fails every sim run
+  ("An error has occurred during simulation"); a **never-deployed** worker returns *"Worker is not
+  available"* and AI scenario-gen yields nothing. A **draft version of an already-live worker CAN be
+  simulated** — which is what makes the draft-only improve loop actually work. Added prerequisites to
+  run-evals, generate-scenarios, and improve-worker; noted in create-worker Phase 12.
+- **`passRate` is a percentage 0–100** (not 0–1). Default loop threshold corrected to **80**.
+  `SimulationResponse.avgQuality` stays `null` (not wired to eval-metrics).
+- **Eval-metric create recipes (the sharp part).** *Custom* = full body (`metricSourceType:"CUSTOM"` +
+  criteria/threshold). *Standard/predefined* = **POST a minimal shell → PUT the full definition,
+  dropping empty-string fields** (an empty `evaluationMethod` 500s; full-body POST 500s on `name`;
+  minimal POST alone = a hollow shell). `version` must be the **live** version. Fetch the catalog via
+  `GET /eval-metric?metricSourceType=STANDARD`. Verified Hallucination/Relevancy/Appropriate Call
+  Termination/CSAT/Sentiment all hydrate this way. Rewrote `run-evals/references/eval-metrics.md`.
+- **Two evaluation surfaces.** Simulation scenario pass/fail (Simulations → Runs) ≠ the **Evals
+  dashboard** (eval-metric results). The dashboard is empty unless metrics exist *and* their evaluation
+  runs — which is **async**: sim calls create eval-results in `status: PENDING`; force scoring with
+  `POST /eval-result/trigger?voiceCallId=<voiceInteractionId>` (the **`voiceInteractionId`**, not
+  `voiceCallMongoId`); a scenario-run's `id` **is** the call's `sessionId`. Rewrote
+  `run-evals/references/simulation-and-results.md`.
+- **Agent type is immutable via PUT** — change it by delete + re-POST (added to
+  `create-worker/references/agents-and-orchestration.md`).
+- **Language switching (en + hi) pattern**, validated live: worker
+  `workerVoiceConfiguration.allowedLanguages:["en","hi"]` + an agent prompt rule (mirror the caller's
+  language; **don't** switch on English-spelled numbers/emails). Documented in generate-scenarios
+  (bilingual personas) and improve-worker (a config-level fix example).
+- **Misc verified:** `/aiworker/{id}/versions` returns `{"items":[…]}`, superseded status is
+  **PAUSED**; scenario/metric list bodies can contain **raw newlines** (parse tolerantly);
+  dropdown-config codes (SIMPLE/MODERATE/COMPLEX, HAPPY/JAILBREAK, VOICE/CHAT, limits 20/20); AI
+  scenario-gen is async with **no progress endpoint** and needs a live worker (manual `POST /scenario`
+  is the reliable fallback). Bumped to 0.4.1.
+
+## 2026-06-30 — 0.4.0 — Close the quality loop: generate-scenarios, run-evals, improve-worker
+
+Three new skills extend the plugin from "build a worker" to "build, **test, evaluate, and iteratively
+improve** a worker until it clears an eval-score threshold" — the loop create-worker →
+generate-scenarios → run-evals → improve-worker.
+
+- **`commotion-generate-scenarios`** — builds a worker's test set: simulated-caller **personalities**
+  (`/personality`, with AI-drafted prompts) and **scenarios** (`/scenario`) — AI-generated (async
+  `POST /scenario/generate` → poll), manual, or from a real call. References: `eval-domain-api.md`
+  (the canonical endpoint map for the scenario/sim/eval domain) + `scenarios-and-personalities.md`.
+- **`commotion-run-evals`** — optionally defines **eval metrics** (`/eval-metric`), runs the scenarios
+  as a **simulation** (`POST /simulation/run`), polls `GET /simulation/{id}`, and reports the
+  **pass-rate** + per-scenario failures (`GET /scenario-run?simulationId=`). References:
+  `eval-metrics.md` + `simulation-and-results.md`.
+- **`commotion-improve-worker`** — owns the **iterate-until-threshold loop**: diagnoses failing
+  scenarios (`failureReason`/`evaluationReasoning`), edits the worker on a **draft** (reusing
+  create-worker's machinery), re-runs the evals, and repeats until `passRate ≥ threshold` or a round
+  cap — then deploys on approval. Reference: `improvement-loop.md` (loop control, regression guard,
+  version-pinning, failure→fix taxonomy).
+- **Locked design decisions** (from build session): the improvement loop is **draft-only** (never
+  auto-deploys mid-loop; the live worker is untouched until the user approves the final version), and
+  the gate is the **scenario pass-rate** (`SimulationResponse.passRate`; default target 0.8, default
+  max 3 rounds, both asked at runtime).
+- **Transport reuse — no new scripts.** Verified against the live OpenAPI spec
+  (`/v3/api-docs/public`, 193 paths) that the scenario/simulation/eval endpoints are part of the
+  **same unified backend** as `/aiworker`/`/aiagent`, so all three skills reuse `commotion_api.sh` +
+  `fetch_schema.sh` + the Step-0 Kong-key flow unchanged. Each skill smoke-tests the eval route
+  (`GET /scenario/dropdown-config`) first.
+- **Open items flagged for live testing** (folded into the references): eval-domain route parity
+  through Kong; version carry-over of scenarios/metrics across a new draft; `standardEvalMetricId`
+  predefined-metric catalog; scenario-run → session/call id linkage for per-metric scores; async
+  scenario-generation poll shape; simulating a draft end-to-end. There is **no server-side
+  "improve prompt" endpoint** — improvement is model reasoning + the create-worker editing machinery.
+- Bumped `plugin.json` / `marketplace.json` to 0.4.0 and widened the descriptions. Skills are
+  auto-discovered from `skills/*/SKILL.md` (no manifest enumeration needed).
+
 ## 2026-06-29 — 0.3.6 — Prompt for the Kong api-key at session start (no committed/embedded key)
 
 The skill no longer needs a committed `.env` or an embedded secret — it asks the user for the Kong

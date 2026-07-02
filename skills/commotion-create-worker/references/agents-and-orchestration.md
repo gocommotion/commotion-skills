@@ -28,6 +28,11 @@ Body shapes: `fetch_schema.sh AiAgentRequest` / `CreateStandardAgentRequest`.
 4. **`SINGLE_AGENT` allows exactly one agent — total.** Trying to add a second fails: `400 "Cannot
    create another agent. Single Agent setup allows only one agent."` To have more than one, switch
    the worker to `MULTI_AGENT` first (`PUT /aiworker/{id}` on the draft), *then* `POST /aiagent`.
+5. **Agent type is immutable via `PUT` (verified live).** Changing an existing agent's `agentType`
+   (e.g. `CHAT_AGENT`→`VOICE_AGENT`, as when a worker is switched to voice) fails: `400 "Cannot change
+   agent type. Please delete the existing agent and create a new one…"`. **Delete the agent and
+   re-POST** it with the new type (`DELETE /aiagent/{id}?version=N` → `POST /aiagent`). An
+   instructions-only `PUT` (same type) is fine.
 
 ## Setup types
 
