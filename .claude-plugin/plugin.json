@@ -1,7 +1,7 @@
 {
   "name": "commotion",
-  "version": "0.3.6",
-  "description": "Commotion Agent Operations \u2014 Claude Skills that build, configure, and deploy voice/chat workers by calling the Commotion dev3 backend directly over HTTP (no MCP server). The skills carry the endpoints, fetch request schemas live from the OpenAPI spec, and orchestrate the full worker lifecycle.",
+  "version": "0.5.0",
+  "description": "Commotion Agent Operations \u2014 Claude Skills that build, configure, deploy, test, evaluate, and iteratively improve voice/chat workers by calling the Commotion dev3 backend directly over HTTP (no MCP server). The skills carry the endpoints, fetch request schemas live from the OpenAPI spec, and orchestrate the full worker quality loop (create \u2192 generate scenarios \u2192 run evals \u2192 improve).",
   "author": {
     "name": "Commotion AI"
   },
