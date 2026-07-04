@@ -45,6 +45,12 @@ Body shapes: `fetch_schema.sh AiAgentRequest` / `CreateStandardAgentRequest`.
 Switching type is allowed **only on a draft** (verified: SINGLE_AGENT → MULTI_AGENT via
 `PUT /aiworker/{id}`, then a second agent attached and deployed).
 
+**Model config in a mixed multi-agent worker resolves per agent type (verified live).** A voice-enabled
+`MULTI_AGENT` worker can hold both a `VOICE_AGENT` and a `CHAT_AGENT`, and there is no single shared
+"worker model": the `VOICE_AGENT` draws its LLM from the worker's Voice-Settings block (it can't hold
+its own — `advancedSettingsRequest` on a `VOICE_AGENT` is rejected), while each `CHAT_AGENT` member
+carries its own agent-level model config. See `control-and-reliability.md` ("Mixed multi-agent worker").
+
 **Where the prompt lives (verified live).** The **detailed system prompt / flow logic goes in the
 agent's `instructions`**, not `workerLevelPrompt`. `workerLevelPrompt` is a short worker-level role
 line (~100 chars, or the orchestrator/router for MULTI_AGENT); the agent's `instructions` carry the
@@ -116,8 +122,12 @@ Required: **`aiWorkerId`**, **`version`**, **`name`**, **`description`**. Useful
   `STRUCTURED_OUTPUT`, `CUSTOM`.
 - **`instructions`** — the agent's system prompt / behaviour.
 - **`aiAgentEnabled`** — boolean; must be `true` to count toward the deploy gate.
-- Also available: `advancedSettingsRequest`, `modelConfigurationRequestList`,
-  `aiAgentSubscriptionRequestList`, `aiAgentTriggerInputList`, `structuredOutputConfig`, `imageUrl`.
+- Also available: `advancedSettingsRequest` (agent LLM settings — fallback list, retries, tokens),
+  `modelConfigurationRequestList` (the agent's **primary** model, `[{id, modelCode, providerCode}]`).
+  For a **chat** worker these two are what the UI's *Agent → Advanced → Language Model* panel shows and
+  edits — **always set the model here** (not just at the worker level), or the UI panel shows blank
+  every time; see `control-and-reliability.md` ("Chat worker — always set the model on the AGENT").
+  Plus `aiAgentSubscriptionRequestList`, `aiAgentTriggerInputList`, `structuredOutputConfig`, `imageUrl`.
 
 `version` is the worker version you're editing (e.g. `0` for a fresh worker, or the draft's version
 when editing a live worker's draft).
