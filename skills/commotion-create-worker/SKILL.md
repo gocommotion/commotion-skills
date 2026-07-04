@@ -401,8 +401,12 @@ This now returns the live worker — show the user the result and its agents.
 
 ## Phase 12 — Test the agent (don't stop at CRUD)
 
-Creating the worker is not the goal — a worker that behaves well is. Drive a few real turns through
-the agent and judge prompt adherence, functionality, and **hallucination**:
+Creating the worker is not the goal — a worker that behaves well is. For a quick text spot-check drive
+a few real turns through the agent (below). For **systematic** testing — scenarios, a pass-rate, and
+an iterate-until-good loop — hand off to the quality-loop skills: `commotion-generate-scenarios` →
+`commotion-run-evals` → `commotion-improve-worker`. **Note:** those automated simulations/evals are
+**voice-only** and need the worker **deployed at least once** (a never-deployed or chat worker can't be
+simulated) — so deploy a voice build first if you'll evaluate it. Text spot-check:
 
 ```bash
 bash "$SCRIPTS/commotion_api.sh" POST /aiworker/run \

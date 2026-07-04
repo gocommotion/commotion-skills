@@ -17,6 +17,28 @@ Ground in schema → interview → draft → approve → create (draft) → enab
    → [knowledge] → [tools] → readiness gate → deploy → confirm live
 ```
 
+### The quality loop
+
+Building a worker isn't the end — a worker that *behaves well* is. Four skills compose into a closed
+quality loop that builds, tests, and iteratively improves a worker until it clears an eval-score
+threshold. The scenario/simulation/eval endpoints are part of the **same** dev3 backend, so the loop
+skills reuse the same transport (`scripts/`) and Kong api-key as create-worker.
+
+```
+create-worker → generate-scenarios → run-evals → improve-worker
+                                        └──── repeat (draft-only) until pass-rate ≥ threshold ────┘
+                                                            → deploy on approval
+```
+
+The improvement loop runs on a **draft** version (the live worker is untouched); the gate is the
+scenario **pass-rate** (`SimulationResponse.passRate`, 0–100); only the final improved version is
+deployed, on the user's explicit yes.
+
+Run it **end-to-end with one request** via the **`commotion-quality-loop`** coordinator — it sequences
+the four specialists and owns the "iterate until the pass-rate clears a threshold" control flow — or
+invoke any specialist on its own for a single step. *(Automated evals are **voice-only** and need a
+worker deployed at least once — the coordinator ensures that before evaluating.)*
+
 ## Layout
 
 ```
@@ -27,6 +49,8 @@ scripts/
   fetch_schema.sh                     # a bundled request schema (fetched once/session, cached)
   bundle_schema.py                    # stdlib port of the OpenAPI $defs bundler
 skills/
+  commotion-quality-loop/
+    SKILL.md                          # orchestrator: runs the full loop end-to-end (invokes the 4 specialists)
   commotion-create-worker/
     SKILL.md                          # build & deploy a worker from a described goal (phased)
     references/
@@ -36,13 +60,31 @@ skills/
       knowledge-and-rag.md            # attach + index source material; grounding tokens
       tools-and-capabilities.md       # built-in/custom/MCP-server/connector tools, A2A, HITL
       control-and-reliability.md      # guardrails, fallback models, structured output
+  commotion-generate-scenarios/
+    SKILL.md                          # build a test set: personalities + scenarios for a worker/version
+    references/
+      eval-domain-api.md              # canonical endpoint map for scenario/sim/eval/personality (shared)
+      scenarios-and-personalities.md  # scenario/persona field shapes, async generation, version-pinning
+  commotion-run-evals/
+    SKILL.md                          # run scenarios as a simulation; report pass-rate + per-scenario failures
+    references/
+      eval-metrics.md                 # eval-metric design, output types, thresholds, standard catalog, alerts
+      simulation-and-results.md       # run lifecycle + poll, reading passRate/quality, scenario-run statuses
+  commotion-improve-worker/
+    SKILL.md                          # the loop: diagnose → edit draft → re-run → repeat → deploy on approval
+    references/
+      improvement-loop.md             # loop control, regression guard, version-pinning, failure→fix taxonomy
 ```
 
 ## Skills
 
 | Skill | What it does |
 |---|---|
+| `commotion-quality-loop` | **Entry point / orchestrator.** Runs the whole pipeline end-to-end from one request — build (if needed) → generate scenarios → run evals → improve — iterating until the scenario pass-rate clears a threshold, then deploys on approval. Invokes the four specialists below via the Skill tool and owns the threshold/max-rounds loop. |
 | `commotion-create-worker` | From a described goal, grounds in the live schema, interviews, drafts the worker (name, prompt, voice + languages, guardrails, fallbacks, structured output), provisions + enables its agent(s), optionally attaches knowledge and tools, and deploys on approval. |
+| `commotion-generate-scenarios` | Builds a worker's **test set** — designs simulated-caller personalities and scenarios (AI-generated, manual, or from a real call), each with a goal the worker must achieve. Step 2 of the quality loop. |
+| `commotion-run-evals` | Optionally defines eval metrics, then runs the scenarios as a **simulation** against a worker/version and reports the **pass-rate** plus a per-scenario pass/fail breakdown with failure reasons. Step 3. |
+| `commotion-improve-worker` | Owns the **loop**: reads the failing scenarios, diagnoses each, edits the worker on a **draft**, re-runs the evals, and repeats until the pass-rate clears a threshold (or a round cap) — then deploys the improved version on approval. Step 4. |
 
 ## Setup
 
