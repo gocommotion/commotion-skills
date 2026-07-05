@@ -193,8 +193,14 @@ Build a candidate `AiWorkerRequest` grounded in Phase 0. Write it to a temp file
   this is the "LLM Settings → Fallback Provider/Model" you see under Voice Settings in the UI), NOT in
   `workerAdvancedSettingsRequest` (which a voice worker / `VOICE_AGENT` rejects). A **chat** worker
   sets primary + `workerFallbackModelConfigurationRequestList` + `numberOfRetries` in
-  `workerAdvancedSettingsRequest`, or on a `CHAT_AGENT` member's `advancedSettingsRequest`. Get codes
-  from `/aimodel`. See `references/control-and-reliability.md`.
+  `workerAdvancedSettingsRequest` — but that worker-level config is **not surfaced in the chat UI**
+  (a chat worker has no worker-level Language Model panel), so if set only there the UI shows blank
+  even though it drives the runtime. The UI's *Language Model* panel is on the **agent** (Agent →
+  Advanced → Language Model), so **always set the model + fallback on the agent** for a chat worker —
+  primary in `modelConfigurationRequestList`, fallback in
+  `advancedSettingsRequest.languageModelSettingsRequest` — so they're always visible/editable in the UI
+  (editing an agent needs the worker in DRAFT). Get codes from `/aimodel`. See
+  `references/control-and-reliability.md`.
 - **Structured output** — if chosen in Phase 2, set `structuredOutputEnabled: true` here (the agent's
   schema is configured in Phase 6).
 

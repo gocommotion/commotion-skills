@@ -69,18 +69,59 @@ worker's models in `workerAdvancedSettingsRequest`:
   VOICE_AGENT type."`
 So a voice worker DOES get a fallback model — configure it in Voice Settings, not advanced settings.
 
-**Chat worker — set primary + fallback in advanced settings.**
-`workerAdvancedSettingsRequest.workerLanguageModelSettingsRequest` (chat worker):
-`{ maximumOutputTokens, temperature,
-   workerLanguageModelConfigurationRequest:{modelCode, providerCode},   // the PRIMARY
-   workerFallbackModelConfigurationRequestList:[{modelCode, providerCode}],  // tried in order
-   numberOfRetries:0–10 }`.
-`modelCode`/`providerCode` come from `GET /aimodel`. **Agent-level fallback** (a `CHAT_AGENT` member)
-lives at `advancedSettingsRequest.languageModelSettingsRequest.fallbackModelConfigurationRequestList` —
-and here each entry **requires `id` + `modelCode` + `providerCode`** (worker-level entries accept
-`modelCode`/`providerCode` alone). `languageModelSettingsRequest` requires `maximumOutputTokens`,
-`numberOfRetries`, `reasoningEffortEnabled`. Get the model `id`s from `GET /aimodel` (e.g.
-`commotion-medium` = `69fc2c6ece21b786c1e36258`, `gpt-4o-india` = `6a354c1e20939d72a7122099`).
+**Chat worker — always set the model on the AGENT; that's the only place the UI shows it.** A chat
+worker has *two* places a model can be set, and they behave differently (verified live):
+
+- **Worker-level default — drives the runtime, but is NOT shown in the UI.**
+  `workerAdvancedSettingsRequest.workerLanguageModelSettingsRequest`:
+  `{ maximumOutputTokens, temperature,
+     workerLanguageModelConfigurationRequest:{modelCode, providerCode},   // the PRIMARY
+     workerFallbackModelConfigurationRequestList:[{modelCode, providerCode}],  // tried in order
+     numberOfRetries:0–10 }`. `modelCode`/`providerCode` come from `GET /aimodel`. This config is real
+  and round-trips on `GET /aiworker/{id}`, **but a chat worker has no worker-level Language Model panel
+  in the UI.** So if you set the model *only* here, the UI's *Language Model* screen (which lives on the
+  **agent**) shows **blank** and users conclude it wasn't saved — even though it drives the runtime.
+
+- **Agent-level — this is what the UI shows and edits.** The UI's *Agent → Advanced → Language Model*
+  panel reads the **agent** record, so to make the model + fallback **visible/editable in the UI**, set
+  them on the agent (`AiAgentRequest`):
+  - **PRIMARY → `modelConfigurationRequestList: [{id, modelCode, providerCode}]`** (top-level on
+    `AiAgentRequest`; the UI's *Provider / Model*).
+  - **FALLBACK → `advancedSettingsRequest.languageModelSettingsRequest.fallbackModelConfigurationRequestList:
+    [{id, modelCode, providerCode}]`** (the UI's *Fallback Provider / Model*).
+  - Every **agent-level** entry **requires `id` + `modelCode` + `providerCode`** (worker-level entries
+    accept `modelCode`/`providerCode` alone). `languageModelSettingsRequest` requires
+    `maximumOutputTokens`, `numberOfRetries`, `reasoningEffortEnabled` (optional `temperature`,
+    `reasoningEffort`). Get the model `id`s from `GET /aimodel` (e.g. `commotion-medium` =
+    `69fc2c6ece21b786c1e36258`, `gpt-4o-india` = `6a354c1e20939d72a7122099`). The response echoes back
+    as `modelConfigurationResponseList` + `advancedSettingsResponse.languageModelSettingsResponse`.
+  - **Set this on the agent every time a chat worker has a model/fallback — it is the default, not an
+    optional extra.** An agent with no override still inherits the worker-level default at runtime, but
+    the UI panel shows **blank**, which reads as "not saved" *every time* someone opens it. So don't
+    rely on the worker-level config alone: mirror the model + fallback onto the agent so they are always
+    visible and editable in the UI (this is also where you'd override the model per-agent).
+  - **Editing the agent needs the worker in DRAFT.** If it's already LIVE, the agent `PUT` fails
+    `400 "Agent can only be updated/deleted when worker is in draft status."` — revert first
+    (`POST /aiworker/{id}/draft?version=N` → a new draft version, live keeps serving), edit the agent on
+    that new version, then redeploy (`POST /aiworker/{id}/deploy?version=N`).
+
+**Mixed multi-agent worker (a `VOICE_AGENT` and a `CHAT_AGENT` in one worker) — model config resolves
+per agent type (verified live).** In a voice-enabled `MULTI_AGENT` worker that holds both, there is no
+single "worker model" that every agent shares — each agent resolves by its own type:
+- **`VOICE_AGENT` → the worker's Voice-Settings LLM.** It **cannot** hold its own model config:
+  `advancedSettingsRequest` on a `VOICE_AGENT` is rejected (`400 "Advanced settings is not supported for
+  VOICE_AGENT type."`), so it draws its brain (and fallback) from the worker's
+  `workerVoiceSettingsRequest.workerLLMConfigurationRequest` (the *Voice Settings → LLM Settings* block).
+  (The `advancedSettingsRequest` path is the verified rejection; a top-level `modelConfigurationRequestList`
+  override on a `VOICE_AGENT` hasn't been tested — assume the voice agent follows the worker LLM.)
+- **`CHAT_AGENT` member → its own agent-level config.** It carries its own primary + fallback exactly as
+  the chat-worker case above (`modelConfigurationRequestList` + `advancedSettingsRequest.languageModelSettingsRequest`),
+  and that's what the UI's *Agent → Advanced → Language Model* panel shows/edits for it.
+
+Verified live on the voice multi-agent worker `6a379970421f279076ad4668`: its `CHAT_AGENT` "Billing
+Specialist" member took an agent-level fallback chain (`gpt-4o-india` → `commotion-large`, retries 2)
+while the `VOICE_AGENT` advanced-settings and `workerAdvancedSettingsRequest` calls were both rejected —
+i.e. the voice side falls back to the worker's Voice-Settings LLM, the chat side owns its own.
 
 ## Recipes
 
@@ -121,6 +162,16 @@ in+out with custom thresholds, PII Commotion-mask, forbidden words) applied and 
 voice/setup config was preserved; a `CHAT_AGENT` "Billing Specialist" member took an agent-level
 fallback chain (`gpt-4o-india` → `commotion-large`, retries 2). The voice rejections above (worker
 advanced settings + `VOICE_AGENT` advanced settings) were both hit here first.
+
+Also on the **chat** single-agent worker `6a48a082f731d86f4fec0067` (agent `6a48a0aa0598df4d16e7e091`):
+the worker-level LLM (`gpt-4o-india` primary / `commotion-medium` fallback, 1 retry) round-tripped but
+rendered **blank** on the agent's *Advanced → Language Model* UI panel. Setting the same config on the
+**agent** — `modelConfigurationRequestList:[{id,modelCode:"gpt-4o-india",providerCode:"azure_openai"}]`
+plus `advancedSettingsRequest.languageModelSettingsRequest.fallbackModelConfigurationRequestList:
+[{id,modelCode:"commotion-medium",providerCode:"commotion"}]` (retries 1, maxTokens 1024, temp 0.3) —
+made both the primary and fallback **appear and stay editable in the UI**. The worker was LIVE, so the
+agent `PUT` first failed the draft-status check; reverting to a fresh draft (v1), editing the agent
+there, and re-reading confirmed the round-trip.
 
 Limits (need a live conversation, like HITL): that guardrails actually *fire* in order, that the
 structured agent *returns* a strict shape, and that a primary-model failure *falls through* — all
