@@ -8,8 +8,9 @@ description: >-
   pass-rate / eval score, or "see how the worker does" — e.g. "run my scenarios and tell me the pass
   rate", "evaluate the renewal bot". This is step 3 of the quality loop (create-worker →
   generate-scenarios → **run-evals** → improve-worker). Needs scenarios to exist first
-  (commotion-generate-scenarios). Calls the dev3 backend directly over HTTP (no MCP server).
-allowed-tools: Bash, Read, AskUserQuestion
+  (commotion-generate-scenarios). Calls the dev3 backend through the thin Commotion MCP server
+  (OAuth — no API key in the transcript).
+allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
 ---
 
 # Commotion: Run Evals (Simulate + Score)
@@ -17,8 +18,8 @@ allowed-tools: Bash, Read, AskUserQuestion
 Run a worker's scenarios as a **simulation** and get back the **eval score** — the pass-rate (the
 percentage, 0–100, of scenarios whose goal the worker achieved), plus a per-scenario breakdown with the reason each
 failure failed. Optionally define **eval metrics** (Hallucination, CSAT, latency, custom domain rules)
-for richer signal. You make the platform I/O yourself with plain HTTP calls to the dev3 backend; there
-is **no MCP server**. **Every write (metrics, the run) is shown to the user and approved first.**
+for richer signal. You make the platform I/O through the connected **Commotion MCP** server's two tools
+(`commotion_request` / `commotion_schema`). **Every write (metrics, the run) is shown to the user and approved first.**
 
 This is **step 3 of the worker quality loop**:
 
@@ -58,34 +59,27 @@ orchestrator** (it invokes this skill as its eval step).
 
 ## How this skill talks to the platform (read first)
 
-**Same transport as `commotion-create-worker`** — same helper scripts, same Kong api-key, same session
-credentials file. It's one unified backend (scenario/simulation/eval endpoints share the spec with
-`/aiworker`). Resolve the scripts dir once:
+All platform I/O goes through the connected **Commotion MCP** server — two tools, no scripts, no keys.
+It's one unified backend (scenario/simulation/eval endpoints share the spec with `/aiworker`), so this
+is the **same transport as `commotion-create-worker`**:
 
-```bash
-SCRIPTS="${CLAUDE_PLUGIN_ROOT:-/absolute/path/to/commotion-skills}/scripts"
-```
+- **`commotion_request`** — one authenticated call: `{ "method": "GET|POST|PUT|DELETE", "path": "/…",
+  "body": <JSON, for writes> }` → `{ "status", "body" }` (a non-2xx is **returned, not thrown** —
+  read it and adjust). Pass a **path** (the base URL is fixed server-side) and the request payload as
+  `body` — no temp files.
+- **`commotion_schema`** — a bundled request schema: `{ "schema_name": "RunScenariosRequest" }` → the
+  JSON Schema with its `$defs`. Any component name in the live spec works. **Never invent a field that
+  isn't in the schema.**
 
-> Do not use `${CLAUDE_PLUGIN_ROOT:?…}` — empty from a clone, would hard-fail.
+**Auth is automatic — there is no key.** The MCP client owns OAuth: the first time the
+Commotion MCP is used it opens a Commotion login in the browser, then attaches the user's token to
+every call. Never ask the user for a token. If the two tools aren't available, the Commotion MCP
+isn't connected — ask the user to add/authorize it (in Claude Code: `/mcp` → **commotion** →
+Authenticate), then continue.
 
-### Step 0 — Make sure the API key is available (do this first)
-
-`commotion_api.sh` reads the Kong api-key from `${TMPDIR:-/tmp}/commotion-mcp/session.env`.
-
-1. **Already set this session** (e.g. from a prior skill)? Reuse it — just run the smoke test.
-2. **Otherwise** ask the user for the Kong api-key with `AskUserQuestion` (+ route selector only if not
-   `demo_workspace`), say it's session-only and unsaved, then write it (**never print the key**):
-   ```bash
-   mkdir -p "${TMPDIR:-/tmp}/commotion-mcp"
-   ( umask 077; printf 'KONG_API_KEY=%s\n' '<the key the user provided>' \
-       > "${TMPDIR:-/tmp}/commotion-mcp/session.env" )
-   ```
-3. **Smoke-test the eval-domain route:** `bash "$SCRIPTS/commotion_api.sh" GET /scenario/dropdown-config`
-   should return 2xx (no worker id needed — `WORKER_ID` is established in Phase 0). A 401/403 = wrong
-   key; a route error = see `references/eval-domain-api.md`. Don't start Phase 0 until this passes.
-
-- **Call** — `bash "$SCRIPTS/commotion_api.sh" <METHOD> <PATH> [BODY]`. **Fetch a schema** —
-  `bash "$SCRIPTS/fetch_schema.sh" <SchemaName>`. **Never invent a field that isn't in the schema.**
+**Read ids from results, not `jq`:** `commotion_request` returns the parsed `body` — after `POST
+/simulation/run` the run id is `body.id`; from a list it's `body[0].id`. Feed that id into the next
+call's `path`.
 
 The endpoint map is in `commotion-generate-scenarios/references/eval-domain-api.md` (the canonical
 map). Eval-metric design is in `references/eval-metrics.md`; the run lifecycle + how to read scores is
@@ -96,16 +90,17 @@ write before making it; **never start a run while another is active** (Phase 2).
 
 ## Phase 0 — Establish the target, then ground in the real schema
 
-First fix what you're testing: the **worker id + version** to evaluate (`WORKER_ID` — in the loop, the
-**draft** under improvement) and the **scenario ids** to run (from `commotion-generate-scenarios` —
-`GET /scenario?aiWorkerId=$WORKER_ID`, reading each record's `version`). Then ground in the schema:
+First fix what you're testing: the **worker id + version** to evaluate (`<worker-id>` — in the loop,
+the **draft** under improvement) and the **scenario ids** to run (from `commotion-generate-scenarios`
+— `commotion_request` `{ "method": "GET", "path": "/scenario?aiWorkerId=<worker-id>" }`, reading each
+record's `version` from `body`). Then ground in the schema:
 
-1. `bash "$SCRIPTS/fetch_schema.sh" RunScenariosRequest` and `EvalMetricRequest`.
-2. `bash "$SCRIPTS/commotion_api.sh" GET "/eval-metric?aiWorkerId=$WORKER_ID"` → metrics already on the
-   worker (don't re-create duplicates).
-3. `bash "$SCRIPTS/commotion_api.sh" GET /scenario/dropdown-config` → `maxScenarioRunLimit` (cap on
-   runs-per-scenario × scenarios) — respect it.
-4. `bash "$SCRIPTS/commotion_api.sh" GET /aimodel` → provider/model codes for the **simulator LLM**.
+1. `commotion_schema` `{ "schema_name": "RunScenariosRequest" }` and `{ "schema_name": "EvalMetricRequest" }`.
+2. `commotion_request` `{ "method": "GET", "path": "/eval-metric?aiWorkerId=<worker-id>" }` → metrics
+   already on the worker (don't re-create duplicates).
+3. `commotion_request` `{ "method": "GET", "path": "/scenario/dropdown-config" }` → `maxScenarioRunLimit`
+   (cap on runs-per-scenario × scenarios) — respect it.
+4. `commotion_request` `{ "method": "GET", "path": "/aimodel" }` → provider/model codes for the **simulator LLM**.
 
 ## Two evaluation surfaces (read before Phase 1 — verified live)
 
@@ -163,35 +158,34 @@ can contain raw newlines (parse tolerantly). Show each before writing. Full deta
 
 ## Phase 2 — Select scenarios and run the simulation  ·  HUMAN INPUT REQUIRED
 
-1. **Check nothing is already running** — `GET /scenario-run/active?aiWorkerId=$WORKER_ID` → if `true`,
-   wait (the platform runs simulations **sequentially**; starting a second is blocked).
+1. **Check nothing is already running** — `commotion_request` `{ "method": "GET", "path":
+   "/scenario-run/active?aiWorkerId=<worker-id>" }` → if `body` is `true`, wait (the platform runs
+   simulations **sequentially**; starting a second is blocked).
 2. **Choose scenarios + runs-per-scenario.** `RunScenariosRequest.scenarioIdToRunPerScenarioMap` maps
    each `scenarioId` → how many times to run it (run a scenario several times to test consistency).
    Keep total runs within `maxScenarioRunLimit`.
 3. **Confirm and run** — show the user which scenarios, how many runs each, and the simulator `llm`;
-   on yes:
-   ```bash
-   bash "$SCRIPTS/commotion_api.sh" POST /simulation/run @run.json | tee /tmp/sim.json
-   SIM_ID=$(jq -r '.id' /tmp/sim.json)
-   ```
-   Body: `{aiWorkerId, version, scenarioIdToRunPerScenarioMap:{<scenarioId>:<nRuns>,…}, maxDuration,
-   maxTurns, llm:{provider,model}}`. **Run against the version under test** (the draft, in the loop).
+   on yes, call `commotion_request` `{ "method": "POST", "path": "/simulation/run", "body": {aiWorkerId,
+   version, scenarioIdToRunPerScenarioMap:{<scenarioId>:<nRuns>,…}, maxDuration, maxTurns,
+   llm:{provider,model}} }` and read the run id from the result: **`<sim-id> = body.id`** (reused in
+   every later call). **Run against the version under test** (the draft, in the loop).
 
 ## Phase 3 — Poll to completion and read the score
 
-```bash
-bash "$SCRIPTS/commotion_api.sh" GET "/simulation/$SIM_ID"
-# poll until the run is genuinely terminal, THEN read the headline numbers:
-#   passRate, passCount / totalScenarios, avgQuality, avgLatency(InMillis), completedScenarios
-```
+Repeatedly call `commotion_request` `{ "method": "GET", "path": "/simulation/<sim-id>" }` and read the
+headline numbers from `body` — `passRate`, `passCount` / `totalScenarios`, `avgQuality`,
+`avgLatency(InMillis)`, `completedScenarios` — until the run is genuinely terminal. A simulation runs
+scenarios sequentially and voice sims run real audio, so expect several polls where it's still
+in-progress; space them out rather than hammering the endpoint.
 
 **Wait for evaluation to finish before reading `passRate` as final.** Each scenario-run passes through
 EVALUATION_* states *after* its conversation completes, and `passRate` isn't final until every run is
 evaluated — so don't stop the moment the simulation looks done: confirm `completedScenarios ==
-totalScenarios` and no runs are still in an EVALUATION_* state (`GET /scenario-run?simulationId=$SIM_ID`)
-before trusting the number. (`SimulationResponse.status` is an unconstrained string — read
-`statusLabel` and the counts rather than matching a hard-coded token; confirm the live terminal label.)
-See `references/simulation-and-results.md` for the full status progression.
+totalScenarios` and no runs are still in an EVALUATION_* state (`commotion_request` `{ "method": "GET",
+"path": "/scenario-run?simulationId=<sim-id>" }`, checking each record's `status` in `body`) before
+trusting the number. (`SimulationResponse.status` is an unconstrained string — read `statusLabel` and
+the counts rather than matching a hard-coded token; confirm the live terminal label.) See
+`references/simulation-and-results.md` for the full status progression.
 
 `SimulationResponse.passRate` **is the eval score — a percentage 0–100** (verified live; an all-pass
 run returns `100.0`). Report it with the raw count (e.g. "6 of 10 passed = 60%") plus `avgQuality` and
@@ -201,19 +195,18 @@ sequentially — expect it to take a while (voice sims run real audio); poll at 
 
 ## Phase 4 — Per-scenario breakdown (the diagnosis fuel)
 
-```bash
-bash "$SCRIPTS/commotion_api.sh" GET "/scenario-run?simulationId=$SIM_ID"
-```
-
-Each `ScenarioRunResponse` gives `status`, `quality`, `scenarioEvaluationResult` (pass/fail), and —
-for failures — `failureReason` + `evaluationReasoning`. Present a table: scenario name · pass/fail ·
-why-it-failed. **This is exactly what `commotion-improve-worker` consumes** to decide what to fix.
+Call `commotion_request` `{ "method": "GET", "path": "/scenario-run?simulationId=<sim-id>" }` and read
+the per-scenario records from `body`. Each `ScenarioRunResponse` gives `status`, `quality`,
+`scenarioEvaluationResult` (pass/fail), and — for failures — `failureReason` + `evaluationReasoning`.
+Present a table: scenario name · pass/fail · why-it-failed. **This is exactly what
+`commotion-improve-worker` consumes** to decide what to fix.
 
 If you defined metrics (Phase 1) and want their per-call scores (or to populate the Evals dashboard),
 note metric evaluation is **async** (verified live): the sim's calls come back as eval-results in
-`status: PENDING` with no scores until the evaluator runs. To read/force them:
-`GET /eval-result/session/{sessionId}` where **`sessionId` == the scenario-run `id`** → if PENDING,
-`POST /eval-result/trigger?voiceCallId=<voiceInteractionId>` (use the result's `voiceInteractionId`,
+`status: PENDING` with no scores until the evaluator runs. To read/force them: `commotion_request` `{
+"method": "GET", "path": "/eval-result/session/<session-id>" }` where **`<session-id>` == the
+scenario-run `id`** → if `body` is PENDING, `commotion_request` `{ "method": "POST", "path":
+"/eval-result/trigger?voiceCallId=<voiceInteractionId>" }` (use the result's `voiceInteractionId`,
 NOT `voiceCallMongoId`). `results[]` (`EvalMetricResultEntry`) gives `metricName`, `evaluation`,
 `thresholdMet`. The pass-rate gate doesn't need this — it's for metric detail / the Evals dashboard.
 Full plumbing in `references/simulation-and-results.md`.
@@ -224,7 +217,7 @@ State the **pass-rate vs the user's target** (ask the target if they haven't sai
 80, since `passRate` is a 0–100 percentage). If it clears the bar, you're done — the worker meets the quality goal at this version. If it's
 below, summarize the failing scenarios and their reasons and hand off to `commotion-improve-worker`
 (step 4), which diagnoses, edits a draft, and re-runs this skill until the bar is met. Keep the
-`SIM_ID` and the failing-scenario analysis — they're the loop's state.
+`<sim-id>` and the failing-scenario analysis — they're the loop's state.
 
 ## Principles
 

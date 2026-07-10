@@ -8,8 +8,9 @@ description: >-
   whenever the user wants to test, simulate, stress-test, or "make scenarios / personas / a test set"
   for a worker — e.g. "generate test cases for my renewal bot", "make an angry-caller persona and run
   it against the worker". This is step 2 of the quality loop (create-worker → **generate-scenarios** →
-  run-evals → improve-worker). Calls the dev3 backend directly over HTTP (no MCP server).
-allowed-tools: Bash, Read, AskUserQuestion
+  run-evals → improve-worker). Calls the dev3 backend through the thin Commotion MCP server (OAuth — no
+  API key in the transcript).
+allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
 ---
 
 # Commotion: Generate Scenarios & Personalities
@@ -18,8 +19,8 @@ Turn a worker's goal into a **test set** that exercises it: a set of **scenarios
 conversation with a goal the worker must achieve) driven by **personalities** (the simulated caller's
 persona, voice, and behaviour). You supply the judgment — which personas the domain needs, which
 happy/failure/jailbreak paths matter, what each scenario's success looks like — and you make the
-platform I/O yourself with plain HTTP calls to the dev3 backend (through the Kong gateway). There is
-**no MCP server**: this skill carries the endpoints and you fetch request schemas live from the
+platform I/O through the connected **Commotion MCP** server's two tools (`commotion_request` /
+`commotion_schema`). This skill carries the endpoints, and you fetch request schemas live from the
 OpenAPI spec. **Every write is shown to the user and approved before it happens.**
 
 This is **step 2 of the worker quality loop**:
@@ -55,50 +56,32 @@ request, use the `commotion-quality-loop` orchestrator** (it invokes this skill 
 
 ## How this skill talks to the platform (read first)
 
-This skill uses the **same transport** as `commotion-create-worker` — the helper scripts in this
-plugin's `scripts/` directory, the same Kong api-key, and the same session credentials file. It's the
-**one unified backend**: the scenario / simulation / eval endpoints live in the same OpenAPI spec as
-`/aiworker` and `/aiagent`, so nothing about auth or schema-fetching changes. Resolve the scripts dir
-once:
+All platform I/O goes through the connected **Commotion MCP** server — two tools, no scripts, no keys.
+It's the **one unified backend**: the scenario / simulation / eval endpoints live in the same OpenAPI
+spec as `/aiworker` and `/aiagent`, so nothing about auth or schema-fetching changes:
 
-```bash
-SCRIPTS="${CLAUDE_PLUGIN_ROOT:-/absolute/path/to/commotion-skills}/scripts"
-```
+- **`commotion_request`** — one authenticated call: `{ "method": "GET|POST|PUT|DELETE", "path": "/…",
+  "body": <JSON, for writes> }` → `{ "status", "body" }` (a non-2xx is **returned, not thrown** —
+  read it and adjust). Pass a **path** (the base URL is fixed server-side) and the request payload as
+  `body` — no temp files.
+- **`commotion_schema`** — a bundled request schema: `{ "schema_name": "GenerateScenarioRequest" }` →
+  the JSON Schema with its `$defs`. Any component name in the live spec works. **Never invent a field
+  that isn't in the schema.**
 
-> Do not use `${CLAUDE_PLUGIN_ROOT:?…}` — from a clone that variable is empty and would hard-fail.
+**Auth is automatic — there is no key.** The MCP client owns OAuth: the first time the
+Commotion MCP is used it opens a Commotion login in the browser, then attaches the user's token to
+every call. Never ask the user for a token. If the two tools aren't available, the Commotion MCP
+isn't connected — ask the user to add/authorize it (in Claude Code: `/mcp` → **commotion** →
+Authenticate), then continue.
 
-### Step 0 — Make sure the API key is available (do this first)
+**Read ids from results, not `jq`:** `commotion_request` returns the parsed `body` — after a create
+the new id is `body.id`; from a list it's `body[0].id`; the async scenario-generate returns
+`body.scenarioGenerationId`. Feed that value into the next call's `path`.
 
-`commotion_api.sh` authenticates with a Kong api-key read from the session credentials file
-`${TMPDIR:-/tmp}/commotion-mcp/session.env`.
-
-1. **If you already set the key this session** (e.g. you just ran `commotion-create-worker`), it's
-   already in that file — reuse it. Confirm with the smoke test below.
-2. **Otherwise** ask the user for their Commotion **Kong api-key** with `AskUserQuestion` (and, only
-   if their workspace isn't the default `demo_workspace`, the route selector). Say it's used only for
-   this session and isn't saved. Then write it (substituting the value; **never print the key**):
-   ```bash
-   mkdir -p "${TMPDIR:-/tmp}/commotion-mcp"
-   ( umask 077; printf 'KONG_API_KEY=%s\n' '<the key the user provided>' \
-       > "${TMPDIR:-/tmp}/commotion-mcp/session.env" )
-   # only for a non-default workspace, also append:
-   #   printf 'KONG_ROUTE_SELECTOR=%s\n' '<value>' >> "${TMPDIR:-/tmp}/commotion-mcp/session.env"
-   ```
-3. **Smoke-test the eval-domain route** (this is the new surface, so verify it specifically):
-   `bash "$SCRIPTS/commotion_api.sh" GET /scenario/dropdown-config` should return the dropdown config.
-   A 401/403 means the key is wrong — ask again; a 404/route error means the eval endpoints aren't on
-   the same route (see `references/eval-domain-api.md`). Don't start Phase 0 until this passes.
-
-- **Make a call** — `bash "$SCRIPTS/commotion_api.sh" <METHOD> <PATH> [BODY]` (inline JSON, `@file.json`,
-  or `-` for stdin). On a non-2xx it prints the backend body and exits non-zero — surface that message.
-- **Fetch a request schema** — `bash "$SCRIPTS/fetch_schema.sh" <SchemaName>` (cached once per session).
-  **Never invent a field that isn't in the schema.**
-- **Capture ids** from responses with `jq`.
-
-The endpoint map, header contract, and schema-name list for the scenario/personality/eval domain are
-in `references/eval-domain-api.md`. Field *shapes* always come from `fetch_schema.sh`; the reference
-files are the *behavior* the schema doesn't tell you. Detailed scenario/personality recipes are in
-`references/scenarios-and-personalities.md`.
+The endpoint map, error semantics, and schema-name list for the scenario/personality/eval domain are
+in `references/eval-domain-api.md` — the single "how to call it" reference. Field *shapes* always come
+from `commotion_schema`; the reference files are the *behavior* the schema doesn't tell you. Detailed
+scenario/personality recipes are in `references/scenarios-and-personalities.md`.
 
 **Execution rules:** one phase at a time, in order; read the reference named by a phase before acting;
 show every write before you make it.
@@ -107,15 +90,18 @@ show every write before you make it.
 
 Never invent field names or values. Read the contracts from the server first:
 
-1. `bash "$SCRIPTS/fetch_schema.sh" GenerateScenarioRequest` and `ScenarioRequest` and
-   `PersonalityRequest` → the exact bodies (bundled with `$defs`).
-2. `bash "$SCRIPTS/commotion_api.sh" GET /scenario/dropdown-config` → the **valid values** for
-   `complexity`, `pathType`, `scenarioGenerationType`, `channelType` (each a `{code,label,isDefault}`)
-   **plus `maxScenarioGenerationLimit` and `maxScenarioRunLimit`** — respect these limits.
-3. `bash "$SCRIPTS/commotion_api.sh" GET /scenario/intent-values` → existing intent tags (typeahead).
-4. `bash "$SCRIPTS/commotion_api.sh" GET /aimodel` → valid provider/model codes for the **simulator
-   LLM** (`LLMConfig` on generate + run — the LLM that powers scenario generation and the simulated
-   caller).
+1. `commotion_schema` `{ "schema_name": "GenerateScenarioRequest" }`, `{ "schema_name":
+   "ScenarioRequest" }`, and `{ "schema_name": "PersonalityRequest" }` → the exact bodies (bundled
+   with `$defs`).
+2. `commotion_request` `{ "method": "GET", "path": "/scenario/dropdown-config" }` → the **valid
+   values** for `complexity`, `pathType`, `scenarioGenerationType`, `channelType` (each a
+   `{code,label,isDefault}`) **plus `maxScenarioGenerationLimit` and `maxScenarioRunLimit`** — respect
+   these limits.
+3. `commotion_request` `{ "method": "GET", "path": "/scenario/intent-values" }` → existing intent tags
+   (typeahead).
+4. `commotion_request` `{ "method": "GET", "path": "/aimodel" }` → valid provider/model codes for the
+   **simulator LLM** (`LLMConfig` on generate + run — the LLM that powers scenario generation and the
+   simulated caller).
 
 ## Phase 1 — Identify the target worker + version  ·  HUMAN INPUT (only what's missing)
 
@@ -166,9 +152,11 @@ ways to create them — pick per goal, usually (a) for breadth + (b) for the pre
 
 - **(a) AI-generate (breadth)** — `POST /scenario/generate` (`GenerateScenarioRequest`:
   `aiWorkerId, version, instructions, numScenarios, personalityIds, generationType, aiAgentChannelType,
-  llm`). `instructions` steers the generator toward the use cases you care about. This is **async** and
-  returns only `{scenarioGenerationId}`; **poll** `GET /scenario?scenarioGenerationId=<id>&aiWorkerId=<id>`
-  until scenarios appear (there is **no generation-progress endpoint**). Keep `numScenarios` ≤
+  llm`). `instructions` steers the generator toward the use cases you care about. This is **async**:
+  the result `body` carries only `scenarioGenerationId` — read it as `<generation-id>` and **poll** by
+  repeatedly calling `commotion_request` `{ "method": "GET", "path":
+  "/scenario?scenarioGenerationId=<generation-id>&aiWorkerId=<worker-id>" }` until the returned `body`
+  array is populated (there is **no generation-progress endpoint**). Keep `numScenarios` ≤
   `maxScenarioGenerationLimit`. **Verified caveat:** generation needs a **deployed (live)** worker —
   against a never-deployed draft it returns a generation id but produces **zero** scenarios (and no
   error). If it comes back empty, fall back to (b). `CHAT` channel is accepted by the API even though
@@ -193,10 +181,9 @@ backend error and check it against the references before retrying.
 
 ## Phase 5 — Confirm the test set
 
-```bash
-bash "$SCRIPTS/commotion_api.sh" GET "/scenario?aiWorkerId=$WORKER_ID"   # then read each .version
-bash "$SCRIPTS/commotion_api.sh" GET "/personality"
-```
+- `commotion_request` `{ "method": "GET", "path": "/scenario?aiWorkerId=<worker-id>" }` → read each
+  record's `version` from `body` to know which version it belongs to.
+- `commotion_request` `{ "method": "GET", "path": "/personality" }`.
 
 Show the user the created scenarios (and their ids) for the version under test, and hand them to
 `commotion-run-evals` (step 3) — that skill selects scenarios + runs-per-scenario and runs the
@@ -204,7 +191,7 @@ simulation. If the user wants to go straight to running, continue into the run-e
 
 ## Principles
 
-- Ground before you draft; never invent a field that isn't in the schema (`fetch_schema.sh`).
+- Ground before you draft; never invent a field that isn't in the schema (`commotion_schema`).
 - A test set is only as good as its **coverage** — design personas + scenarios from the domain's real
   happy/failure/jailbreak paths, not a template. The `scenarioGoal` is the pass criterion, so make it
   concrete and checkable.
@@ -213,5 +200,5 @@ simulation. If the user wants to go straight to running, continue into the run-e
 - AI generation is **async** — poll `GET /scenario?scenarioGenerationId=` until the scenarios appear;
   respect `maxScenarioGenerationLimit` / `maxScenarioRunLimit` from the dropdown-config.
 - Show every write before you make it (personalities before scenarios that reference them).
-- If a platform call errors, the helper surfaces the backend's status + message — read it and check it
-  against the references before retrying.
+- If a platform call errors, `commotion_request` returns the backend's status + body — read it and
+  check it against the references before retrying.

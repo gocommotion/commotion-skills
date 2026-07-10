@@ -1,9 +1,10 @@
 # dev3 aiworker lifecycle — draft/live, versions, and the sharp edges
 
-Operational behavior of the `/aiworker` backend (called directly over HTTP — see
-`api-and-auth.md`). Read this when a create / update / deploy call behaves unexpectedly. Field
-*shapes* come from `fetch_schema.sh AiWorkerRequest`; this file is the *behavior* the schema doesn't
-tell you. Agent specifics live in `agents-and-orchestration.md`.
+Operational behavior of the `/aiworker` backend, reached through the two Commotion MCP tools
+(`commotion_request` / `commotion_schema` — see `api-and-auth.md`). Read this when a create / update /
+deploy call behaves unexpectedly. Field *shapes* come from `commotion_schema` `{ "schema_name":
+"AiWorkerRequest" }`; this file is the *behavior* the schema doesn't tell you. Agent specifics live in
+`agents-and-orchestration.md`.
 
 ## Endpoints
 
@@ -80,8 +81,9 @@ workerVoiceSettingsRequest:
 **For a voice worker, the LLM (brain) AND its fallback model are configured in this voice block**
 (`workerLLMConfigurationRequest`) — this is the UI's *Voice Settings → LLM Settings → Provider /
 Model / Fallback Provider / Fallback Model*. Do NOT use `workerAdvancedSettingsRequest` on a voice
-worker (it's rejected). Inspect the exact fallback field names with `fetch_schema.sh AiWorkerRequest`
-(`WorkerVoiceSettingsRequest`). See `references/control-and-reliability.md` ("Models + fallback").
+worker (it's rejected). Inspect the exact fallback field names with `commotion_schema` `{ "schema_name":
+"AiWorkerRequest" }` (`WorkerVoiceSettingsRequest`). See `references/control-and-reliability.md`
+("Models + fallback").
 
 **Verified-good en+hi block (mirror this — created + deployed live, S2S):** `provider:
 "commotion-tts"`, `model: "commotion-laya-v1-5"`, `voiceId:
@@ -98,7 +100,7 @@ Notes:
 - **Request vs response field names differ.** The request uses `…Request` suffixes
   (`workerVoiceSettingsRequest`, `workerLLMConfigurationRequest`); a list/retrieve *response* uses
   `…Response`. Don't copy a response back as a request — map field-by-field against
-  `fetch_schema.sh AiWorkerRequest`, or the mismatched keys are silently dropped.
+  `commotion_schema` `{ "schema_name": "AiWorkerRequest" }`, or the mismatched keys are silently dropped.
 - Multilingual workers also need a prompt line telling them to mirror the caller's language: the
   voice config lets them *speak* the language; the prompt makes them *choose* to.
 - **Don't switch language on English-spoken digits (verified live — bake into the prompt).** Stay in

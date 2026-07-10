@@ -1,16 +1,18 @@
 # Commotion Skills
 
-Claude Skills for operating Commotion voice/chat agents. The skills call the Commotion **dev3
-backend directly over HTTP** (through the Kong gateway) — there is **no MCP server**. Each skill
-carries the endpoints it needs, fetches request schemas live from the OpenAPI spec, and orchestrates
-the full worker lifecycle. All platform write-back is human-approved.
+Claude Skills for operating Commotion voice/chat agents. The skills carry the endpoints and judgment
+(the "brain") and reach the Commotion **dev3 backend** through a **thin Commotion MCP server** that
+holds auth and proxies each call — two tools (`commotion_request` + `commotion_schema`), **OAuth**,
+and **no API key in the transcript**. Each skill fetches request schemas live from the OpenAPI spec
+and orchestrates the full worker lifecycle. All platform write-back is human-approved.
 
 ## Overview
 
 A skill is a phased runbook: it grounds itself in the live config schema, interviews for the goal,
 drafts the worker, provisions and enables its agent(s), optionally attaches knowledge and tools, and
-deploys on approval. The HTTP mechanics live in thin helper scripts (`scripts/`) so the Kong api-key
-never lands in a command transcript and every call is made the same way.
+deploys on approval. The transport lives behind the thin Commotion MCP server's two tools, so the
+credential stays server-side (OAuth) and never lands in a command transcript, and every call is made
+the same way.
 
 ```
 Ground in schema → interview → draft → approve → create (draft) → enable agent(s)
@@ -22,7 +24,7 @@ Ground in schema → interview → draft → approve → create (draft) → enab
 Building a worker isn't the end — a worker that *behaves well* is. Four skills compose into a closed
 quality loop that builds, tests, and iteratively improves a worker until it clears an eval-score
 threshold. The scenario/simulation/eval endpoints are part of the **same** dev3 backend, so the loop
-skills reuse the same transport (`scripts/`) and Kong api-key as create-worker.
+skills reuse the same transport (the Commotion MCP) as create-worker.
 
 ```
 create-worker → generate-scenarios → run-evals → improve-worker
@@ -42,23 +44,18 @@ worker deployed at least once — the coordinator ensures that before evaluating
 ## Layout
 
 ```
-.claude-plugin/plugin.json            # plugin manifest (name: commotion)
-.env.example                          # KONG_API_KEY (+ non-secret defaults); copy to .env
-scripts/
-  commotion_api.sh                    # one authenticated HTTP call to dev3 via Kong
-  fetch_schema.sh                     # a bundled request schema (fetched once/session, cached)
-  bundle_schema.py                    # stdlib port of the OpenAPI $defs bundler
+.claude-plugin/plugin.json            # plugin manifest (name: commotion) — registers the Commotion MCP server
 skills/
   commotion-quality-loop/
     SKILL.md                          # orchestrator: runs the full loop end-to-end (invokes the 4 specialists)
   commotion-create-worker/
     SKILL.md                          # build & deploy a worker from a described goal (phased)
     references/
-      api-and-auth.md                 # endpoint map, headers, schema names — the transport contract
+      api-and-auth.md                 # endpoint map, the two MCP tools, schema names — the transport contract
       aiworker-lifecycle.md           # draft↔live, versions, voice/language config
       agents-and-orchestration.md     # single/multi-agent, FAQ, structured-output agents
       knowledge-and-rag.md            # attach + index source material; grounding tokens
-      tools-and-capabilities.md       # built-in/custom/MCP-server/connector tools, A2A, HITL
+      tools-and-capabilities.md       # built-in/custom/code-block/MCP-server/connector tools, A2A, HITL
       control-and-reliability.md      # guardrails, fallback models, structured output
   commotion-generate-scenarios/
     SKILL.md                          # build a test set: personalities + scenarios for a worker/version
@@ -88,32 +85,24 @@ skills/
 
 ## Setup
 
-Secrets are environment-only. Provide your own Kong api-key — **never commit it.**
+**No API key.** The plugin registers the **Commotion MCP** server; auth is **OAuth**, handled by your
+MCP client. The first time a skill uses the Commotion MCP, Claude opens a Commotion login in your
+browser, then stores the token and attaches it to every call automatically — the raw token never
+enters the conversation.
 
-> **Security note:** in the skills-only model the Kong api-key lives on the machine running Claude
-> (it used to be held server-side by the MCP adapter). Treat it like any other local secret: keep it
-> in a gitignored `.env`, and use a key scoped to your workspace.
+If the tools aren't connected yet, authorize the server:
 
-```bash
-cp .env.example .env
-# edit .env and set KONG_API_KEY (get it from BE)
+```
+/mcp            # select "commotion" → Authenticate (a browser login opens once)
 ```
 
-`.env` carries `KONG_API_KEY` (secret) plus non-secret defaults
-(`KONG_BACKEND_URL`, `KONG_API_KEY_HEADER`, `KONG_ROUTE_SELECTOR`). The skill loads it automatically;
-to use the scripts by hand: `set -a; . ./.env; set +a`.
-
-Smoke-test the transport:
-
-```bash
-bash scripts/commotion_api.sh GET /aimodel        # should list models
-bash scripts/fetch_schema.sh AiWorkerRequest      # should print the worker schema
-```
+That's it — no `.env`, no key to paste. The credential lives server-side on the MCP server (see the
+`commotion-mcp` repo for how OAuth + the two tools are implemented).
 
 ## Install (Claude Code)
 
-This repo ships as a Claude Code **plugin** bundling the skills and helper scripts. For local
-development, point Claude Code at this directory:
+This repo ships as a Claude Code **plugin** bundling the skills and registering the Commotion MCP
+server (`plugin.json` → `mcpServers`). For local development, point Claude Code at this directory:
 
 ```bash
 claude --plugin-dir /path/to/commotion-skills
@@ -127,13 +116,15 @@ Once published to the team plugin marketplace:
 ```
 
 The skill then appears as `/commotion:commotion-create-worker` and auto-triggers when you ask Claude
-to build a worker/voice agent. Set `KONG_API_KEY` in your environment (or the plugin's `.env`) first.
+to build a worker/voice agent. On first use, authorize the Commotion MCP (`/mcp` → **commotion** →
+Authenticate) — a one-time browser login; no key to set.
 
 ## Relationship to `commotion-mcp`
 
-The `commotion-mcp` repo (the hosted MCP adapter) still exists but is **no longer referenced** by
-these skills — the skills talk to dev3 directly. The backend endpoints, auth headers, and schema
-bundling here were ported from that adapter (see `references/api-and-auth.md`).
+The `commotion-mcp` repo is the **thin MCP server** these skills depend on: it holds the OAuth
+credential and exposes the two tools (`commotion_request` + `commotion_schema`) that every skill
+calls. `plugin.json` registers it (a hosted HTTP server, OAuth); the skills carry the endpoint map
+and judgment. Deploy and operate it from that repo.
 
 ## License
 

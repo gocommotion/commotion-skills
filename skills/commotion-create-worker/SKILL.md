@@ -8,18 +8,19 @@ description: >-
   bot for a use case — e.g. "make a voice agent that books dealership test drives in Hindi and
   English", "set up a multi-agent support bot for my client" — even if they don't say the word
   "worker". Handles the dev3 lifecycle (draft↔live versions, single vs multi-agent, enabling the
-  agent, the voice/language schema). Calls the dev3 backend directly over HTTP (no MCP server).
-allowed-tools: Bash, Read, AskUserQuestion
+  agent, the voice/language schema). Calls the dev3 backend through the thin Commotion MCP server
+  (OAuth — no API key in the transcript).
+allowed-tools: Read, AskUserQuestion, Bash, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
 ---
 
 # Commotion: Create a Worker
 
 Turn a described goal ("a voice bot that books dealership test drives in Hindi and English") into a
 configured, deployed Commotion worker. You supply the judgment — the name, the system prompt, the
-voice/guardrail choices, the agent instructions — and you make the platform I/O yourself with plain
-HTTP calls to the dev3 backend (through the Kong gateway). There is **no MCP server**: this skill
-carries the endpoints, and you fetch request schemas live from the OpenAPI spec. Every write to the
-platform is **shown to the user and approved before it happens**.
+voice/guardrail choices, the agent instructions — and you make the platform I/O through the connected
+**Commotion MCP** server's two tools (`commotion_request` / `commotion_schema`). This skill carries
+the endpoints, and you fetch request schemas live from the OpenAPI spec. Every write to the platform
+is **shown to the user and approved before it happens**.
 
 A worker is the **orchestrator** that holds and routes to its **agent(s)** — the actual
 conversational behaviour lives in the agents. So creating a working worker is two things: configure
@@ -38,56 +39,28 @@ to a draft → edit → redeploy) — the drafting and agent guidance below stil
 
 ## How this skill talks to the platform (read first)
 
-All platform I/O goes through two helper scripts in this plugin's `scripts/` directory. Resolve it
-once at the start of a session:
+All platform I/O goes through the connected **Commotion MCP** server — two tools, no scripts, no keys:
 
-```bash
-# Installed as a plugin, $CLAUDE_PLUGIN_ROOT is set. Running from a clone it is NOT set, so fall
-# back to the repo's scripts/ — that's two levels up from this skill's Base directory (shown above),
-# i.e. <repo>/scripts. Set SCRIPTS to that absolute path (substitute the real clone path):
-SCRIPTS="${CLAUDE_PLUGIN_ROOT:-/absolute/path/to/commotion-skills}/scripts"
-```
+- **`commotion_request`** — one authenticated call: `{ "method": "GET|POST|PUT|DELETE", "path": "/…",
+  "body": <JSON, for writes> }` → `{ "status", "body" }` (a non-2xx is **returned, not thrown** —
+  read it and adjust). Pass a **path** (the base URL is fixed server-side) and the request payload as
+  `body` — no temp files.
+- **`commotion_schema`** — a bundled request schema: `{ "schema_name": "AiWorkerRequest" }` → the JSON
+  Schema with its `$defs`. Any component name in the live spec works. **Never invent a field that
+  isn't in the schema.**
 
-> Do not use `${CLAUDE_PLUGIN_ROOT:?…}` — from a clone that variable is empty and would hard-fail.
+**Auth is automatic — there is no key.** The MCP client owns OAuth: the first time the
+Commotion MCP is used it opens a Commotion login in the browser, then attaches the user's token to
+every call. Never ask the user for a token. If the two tools aren't available, the Commotion MCP
+isn't connected — ask the user to add/authorize it (in Claude Code: `/mcp` → **commotion** →
+Authenticate), then continue.
 
-### Step 0 — Provide the API key (do this first, before Phase 0)
+**Read ids from results, not `jq`:** `commotion_request` returns the parsed `body` — after a create
+the new id is `body.id`; from a list it's `body[0].id`. Feed that id into the next call's `path`.
 
-The helper scripts authenticate with a Kong api-key, and **this skill does not ship one**. Before
-any other work, get it from the user and store it for this session only:
-
-1. Ask the user for their Commotion **Kong api-key** with `AskUserQuestion` (and, *only* if their
-   workspace isn't the default `demo_workspace`, the route selector). Say it's used only for this
-   session and isn't saved.
-2. Write it to the session credentials file with restricted permissions, substituting the value the
-   user gave — and **never print the key** (no `echo`/`cat` of it, don't repeat it back):
-   ```bash
-   mkdir -p "${TMPDIR:-/tmp}/commotion-mcp"
-   ( umask 077; printf 'KONG_API_KEY=%s\n' '<the key the user provided>' \
-       > "${TMPDIR:-/tmp}/commotion-mcp/session.env" )
-   # only if the user gave a non-default workspace, also append:
-   #   printf 'KONG_ROUTE_SELECTOR=%s\n' '<value>' >> "${TMPDIR:-/tmp}/commotion-mcp/session.env"
-   ```
-   `commotion_api.sh` auto-loads this file on every call, so you set it once. (An already-exported
-   `KONG_API_KEY` or a local `.env` still takes precedence — handy for repeated local runs.)
-3. **Smoke-test it:** `bash "$SCRIPTS/commotion_api.sh" GET /aimodel` should return the model list. A
-   401/403 means the key is wrong — ask again. Do not start Phase 0 until this passes.
-
-> The key lives only in this session's temp file (mode 600) and the conversation context — it is
-> never committed, never written to `.env` by the skill, and never embedded in the skill bundle.
-
-- **Make a call** — `bash "$SCRIPTS/commotion_api.sh" <METHOD> <PATH> [BODY]`. It injects the Kong
-  base URL + auth headers (`apikey`, `X-Route-Selector`) so you only supply method + path + body.
-  `BODY` is inline JSON, `@file.json`, or `-` (stdin). On a non-2xx it prints the backend body and
-  exits non-zero — **surface that message** and check it against the reference notes before retrying.
-  For bodies of any size, write the JSON to a temp file and pass `@/tmp/body.json`.
-- **Fetch a request schema** — `bash "$SCRIPTS/fetch_schema.sh" <SchemaName>`. It pulls
-  `/v3/api-docs/public` **once per session** (cached) and prints the named schema bundled with its
-  `$defs`. Re-use it; **never invent a field that isn't in the schema.**
-- **Capture ids** from responses with `jq` (e.g. `... | jq -r '.id'`).
-
-The full endpoint map, header contract, error semantics, and schema-name list are in
-`references/api-and-auth.md` — the single "how to call it" reference. Field *shapes* always come
-from `fetch_schema.sh`; the reference files are the *behavior* the schema doesn't tell you.
+The full endpoint map, error semantics, and schema-name list are in `references/api-and-auth.md` —
+the single "how to call it" reference. Field *shapes* always come from `commotion_schema`; the
+reference files are the *behavior* the schema doesn't tell you.
 
 **Execution rules:** one phase at a time, in order; read the reference named by a phase before you
 act on it; show every write before you make it. Optional phases (7, 8) only run when the goal needs
@@ -97,21 +70,21 @@ them.
 
 Never invent field names or values. Read the contracts from the server first:
 
-1. `bash "$SCRIPTS/fetch_schema.sh" AiWorkerRequest` → the exact JSON Schema of the worker body
-   (bundled with `$defs`). Cached for the session.
-2. `bash "$SCRIPTS/commotion_api.sh" GET /aiworker/metadata` → valid *values* and defaults
-   (`agentSetupType` options; `guardrailConfig` toxicity categories/ranges + PII behaviours;
+1. `commotion_schema` `{ "schema_name": "AiWorkerRequest" }` → the exact JSON Schema of the worker
+   body (bundled with `$defs`). Cached for the session.
+2. `commotion_request` `{ "method": "GET", "path": "/aiworker/metadata" }` → valid *values* and
+   defaults (`agentSetupType` options; `guardrailConfig` toxicity categories/ranges + PII behaviours;
    `llmConfig` retry range). Top-level keys: `voiceConfig`, `guardrailConfig`, `workerConfig`, `llmConfig`.
-3. `bash "$SCRIPTS/commotion_api.sh" GET /aimodel` → valid model / provider codes — for the voice
-   block **and** for the primary + fallback models (Phase 3).
+3. `commotion_request` `{ "method": "GET", "path": "/aimodel" }` → valid model / provider codes — for
+   the voice block **and** for the primary + fallback models (Phase 3).
 
 For the agent body fields (`AiAgentRequest`), see `references/agents-and-orchestration.md`; for
 attaching source material / FAQ grounding, see `references/knowledge-and-rag.md`; for guardrails,
 fallback models, and structured output, see `references/control-and-reliability.md`.
 
 If the goal implies the worker must **act** (do something, not just answer), also ground in the tool
-surface: `GET /ai-worker-tool/metadata` (the built-in action catalog) and
-`fetch_schema.sh <kind-schema>` for whatever kinds you'll attach — see `references/tools-and-capabilities.md`.
+surface: `commotion_request` `GET /ai-worker-tool/metadata` (the built-in action catalog) and
+`commotion_schema` for whatever kinds you'll attach — see `references/tools-and-capabilities.md`.
 
 ## Phase 1 — Understand the goal (interview only for what's missing)  ·  HUMAN INPUT
 
@@ -152,8 +125,8 @@ true` and plan a single `STRUCTURED_OUTPUT` agent (Phase 6). Single-agent only.
 
 ## Phase 3 — Draft the worker config (this is the value you add)
 
-Build a candidate `AiWorkerRequest` grounded in Phase 0. Write it to a temp file (e.g.
-`/tmp/worker.json`) so you can pass it as `@/tmp/worker.json` in Phase 5.
+Build a candidate `AiWorkerRequest` grounded in Phase 0. Hold it as the `body` you'll pass to
+`commotion_request` in Phase 5.
 
 - **`name`** — short, human, from the goal.
 - **`agentSetupType`** — from Phase 2.
@@ -233,15 +206,19 @@ agent(s)) — not a raw JSON dump. Get an explicit "yes" before any write.
 
 ## Phase 5 — Create the worker
 
-```bash
-bash "$SCRIPTS/commotion_api.sh" POST /aiworker @/tmp/worker.json | tee /tmp/worker.created.json
-WORKER_ID=$(jq -r '.id' /tmp/worker.created.json)
-```
+Call `commotion_request` `{ "method": "POST", "path": "/aiworker", "body": <the AiWorkerRequest> }`,
+then read the new worker id from the result: **`WORKER_ID = body.id`** (reused in every later call).
 
 `POST /aiworker` returns a **DRAFT at version 0**. Capture the `id`. A new worker is provisioned with
 a **default agent**, initially **disabled** — named "Chat Agent" on a chat worker and **"Voice Agent"
 on a voice worker** (verified live; its `agentType` starts `null`). (A draft isn't visible to
 `GET /aiworker/{id}`, which is live-only — confirm via `GET /aiworker` (list) if needed.)
+
+**Worker names are globally unique (verified live 2026-07-10).** Creating with a name that already
+exists returns `status 400` with `body` "*A worker with the name 'X' already exists*" — it is **not**
+thrown, so read the status and react: pick a distinct name (confirm the new name with the user) or,
+if the user means the existing worker, `GET /aiworker` (list), find it by name, and reuse its `id`
+instead of creating a duplicate.
 
 ## Phase 6 — Provision + enable the agent(s)  ← the step people miss
 
@@ -249,14 +226,16 @@ Agents can only be created/edited while the worker is a **DRAFT**. **Golden rule
 the prompt only renders/edits in the UI for agents created via **`POST /aiagent`**. PUT-updating the
 auto-provisioned default sets `instructions` for the runtime but leaves the editor blank. So in BOTH
 setups you **POST** the prompt-bearing agent — the only difference is making room for it. List what's
-there first: `GET /aiagent?workerId=$WORKER_ID&version=0`.
+there first: `GET /aiagent?workerId=<worker-id>&version=0`.
 
 - **`SINGLE_AGENT`** — delete the auto-default, then POST the real agent into the freed slot:
-  ```bash
-  DEF=$(bash "$SCRIPTS/commotion_api.sh" GET "/aiagent?workerId=$WORKER_ID&version=0" | jq -r '.[0].id')
-  bash "$SCRIPTS/commotion_api.sh" DELETE "/aiagent/$DEF?version=0"          # version=0 is REQUIRED
-  bash "$SCRIPTS/commotion_api.sh" POST   /aiagent @/tmp/agent.json          # body below, aiAgentEnabled:true
-  ```
+  1. `commotion_request` `{ "method": "GET", "path": "/aiagent?workerId=<worker-id>&version=0" }` →
+     the default agent id is `body[0].id`.
+  2. `commotion_request` `{ "method": "DELETE", "path": "/aiagent/<default-id>?version=0" }`
+     (`version=0` is REQUIRED).
+  3. `commotion_request` `{ "method": "POST", "path": "/aiagent", "body": <the agent, aiAgentEnabled:true> }`
+     (body shape below).
+
   (POSTing before the delete fails: `400 "Single Agent setup allows only one agent"`.) The POSTed
   agent's prompt renders + is editable. Agent body: `{aiWorkerId, version:0, name, description,
   agentType, instructions, aiAgentEnabled:true}`. The request `agentType` echoes back as `aiAgentType`
@@ -305,11 +284,11 @@ recipes (field shapes, enums, the presigned-PUT) are in `references/knowledge-an
   Storage, **not** through the backend; the header is required or Azure 400s; success is `201`) →
   `POST /aiworker/knowledge/bulk` → `POST /aiworker/knowledge/index`.
 - **Existing global KB** → `GET /aiworker/knowledge/global` →
-  `POST /aiworker/knowledge/by-global/{globalId}?aiWorkerId=$WORKER_ID` (already published — no index step).
+  `POST /aiworker/knowledge/by-global/{globalId}?aiWorkerId=<worker-id>` (already published — no index step).
 
-Run `fetch_schema.sh CreateAiWorkerKnowledgeItemRequest` first if unsure of the bulk item shape.
+Run `commotion_schema` `{ "schema_name": "CreateAiWorkerKnowledgeItemRequest" }` first if unsure of the bulk item shape.
 Indexing is **synchronous** but the material isn't searchable instantly — **poll
-`GET /aiworker/knowledge?aiWorkerId=$WORKER_ID` and wait until each item's `aiWorkerKnowledgeStatus`
+`GET /aiworker/knowledge?aiWorkerId=<worker-id>` and wait until each item's `aiWorkerKnowledgeStatus`
 is ready before deploying**. Show the user what you're attaching before each write.
 
 **Then bind the KB to each grounded agent (required).** Worker-level attach alone does *not* make an
@@ -340,8 +319,10 @@ The full per-kind recipes, body shapes, HITL, and the projection model are in
 
 - **Decide what it must do**, and map each need to a kind: a platform built-in (end call, transfer) →
   `POST /ai-worker-tool/built-in-actions` (codes from `GET /ai-worker-tool/metadata`); an arbitrary
-  HTTP API → `POST /ai-worker-tool/custom-tool` (an HTTP wrapper — **there is no code-snippet mode**);
-  an external MCP server → `POST /ai-worker-tool/mcp-server`; a managed SaaS app (Zoho, Slack, …) → a
+  HTTP API → `POST /ai-worker-tool/custom-tool` (an HTTP wrapper); custom in-process Python logic
+  (transform, compute, format) → `POST /ai-worker-tool/code-block` (test the source first with
+  `POST /ai-worker-tool/code-block/run`); an external MCP server → `POST /ai-worker-tool/mcp-server`;
+  a managed SaaS app (Zoho, Slack, …) → a
   **connector**: `GET /ai-worker-tool/integration-apps` → `GET /ai-worker-tool/app-actions` /
   `GET /ai-worker-tool/webhooks` → `POST /ai-worker-tool/credential` (OAuth) →
   `POST /ai-worker-tool/connector` (see the connector recipe in the reference); another Commotion
@@ -358,8 +339,14 @@ The full per-kind recipes, body shapes, HITL, and the projection model are in
 - **Built-ins:** the catalog defaults (`end_call`, `switch_language`) are **already configured** on
   every worker — re-adding one is a 400. Add only non-defaults (e.g. `transfer_to_human`). Built-in
   actions have **no** `hitlMode`.
-- **HITL:** `hitlMode: "REQUIRE_APPROVAL"` lives on **connector and MCP-server** actions (not built-in);
-  at runtime that action pauses for approval and resumes via `POST /aiworker/continue`.
+- **Code-block tools** run **sandboxed Python** (`language:"PYTHON"`) — good for logic on data you
+  already have, but the sandbox has **no network/filesystem** (route external calls through a
+  `custom-tool`). It supports `hitlMode`, `outputAsJson`, and `toolUsageTypes` (`LLM`/`PRE_LOAD`).
+  Its `actionMetaDataOutputList` is empty — bind by `codeBlockMetadataOutput.lowerCaseName`
+  (`[tool:<name>]`, used as-is). Test with `POST /ai-worker-tool/code-block/run` before attaching.
+  Details in `references/tools-and-capabilities.md`.
+- **HITL:** `hitlMode: "REQUIRE_APPROVAL"` lives on **connector, MCP-server, and code-block** actions
+  (not built-in); at runtime that action pauses for approval and resumes via `POST /aiworker/continue`.
 - **Connector credentials are validated** — a dummy/invalid key gives `200 {"id":"","success":false}`
   (no error). `credentialMetaDataInput` is **optional**, so attach the connector's actions first and add
   the credential (`PUT /ai-worker-tool/connector/{id}`) once you have real auth (OAuth → done in the UI).
@@ -370,40 +357,34 @@ The full per-kind recipes, body shapes, HITL, and the projection model are in
   `reasoningEffort:LOW|MEDIUM|HIGH` (model must support it — see `/aimodel`); *state* appears on its own
   when the worker has it — agents read it in the prompt via `[var:<name>]`. Neither is a tool.
 - **Show every write before you make it** (especially each HITL gate); confirm with
-  `GET /ai-worker-tool?aiWorkerId=$WORKER_ID&version=0`.
+  `GET /ai-worker-tool?aiWorkerId=<worker-id>&version=0`.
 
 ## Phase 9 — Deploy readiness gate
 
-Confirm with `GET /aiagent?workerId=$WORKER_ID&version=0` before deploying:
+Confirm with `GET /aiagent?workerId=<worker-id>&version=0` before deploying:
 
 - `SINGLE_AGENT` → **exactly one enabled agent** (else deploy 400s "requires exactly one enabled
   agent, but found 0").
 - `MULTI_AGENT` → the agents the orchestrator needs are present and enabled.
 - If you attached knowledge (Phase 7) → every item's `aiWorkerKnowledgeStatus` is ready (not still
   indexing/failed), so the worker actually grounds on it from the first live conversation.
-- If you attached tools (Phase 8) → `GET /ai-worker-tool?aiWorkerId=$WORKER_ID&version=0` shows them as expected.
+- If you attached tools (Phase 8) → `GET /ai-worker-tool?aiWorkerId=<worker-id>&version=0` shows them as expected.
 
 ## Phase 10 — Deploy  ·  ALWAYS ASK FIRST
 
 **Never deploy without an explicit user "yes".** Once readiness passes, summarise what will go live
 and ask with `AskUserQuestion` (e.g. "Deploy this worker live now?" — Deploy now / Keep as draft).
-Only on a clear yes:
-
-```bash
-bash "$SCRIPTS/commotion_api.sh" POST "/aiworker/$WORKER_ID/deploy?version=0"
-```
+Only on a clear yes, call `commotion_request`
+`{ "method": "POST", "path": "/aiworker/<worker-id>/deploy?version=0" }`.
 
 A fresh worker's first deploy is **version 0**. If the user is not ready, leave it as a draft (you
-can persist a draft without going live with `POST "/aiworker/$WORKER_ID/draft?version=0"`). Deploying
+can persist a draft without going live with `commotion_request` `POST /aiworker/<worker-id>/draft?version=0`). Deploying
 is the one irreversible-feeling step for the user — gating it on confirmation is mandatory, not optional.
 
 ## Phase 11 — Confirm live
 
-```bash
-bash "$SCRIPTS/commotion_api.sh" GET "/aiworker/$WORKER_ID"
-```
-
-This now returns the live worker — show the user the result and its agents.
+Call `commotion_request` `{ "method": "GET", "path": "/aiworker/<worker-id>" }`. This now returns the
+live worker — show the user the result and its agents.
 
 ## Phase 12 — Test the agent (don't stop at CRUD)
 
@@ -414,11 +395,9 @@ an iterate-until-good loop — hand off to the quality-loop skills: `commotion-g
 **voice-only** and need the worker **deployed at least once** (a never-deployed or chat worker can't be
 simulated) — so deploy a voice build first if you'll evaluate it. Text spot-check:
 
-```bash
-bash "$SCRIPTS/commotion_api.sh" POST /aiworker/run \
-  '{"workerId":"'$WORKER_ID'","messageText":"<a realistic opening line>","conversationId":"t1","sessionId":"t1","userId":"t1"}'
-# continue the conversation by reusing the same conversationId/sessionId
-```
+Call `commotion_request` `{ "method": "POST", "path": "/aiworker/run", "body": {"workerId":
+"<worker-id>", "messageText": "<a realistic opening line>", "conversationId": "t1", "sessionId":
+"t1", "userId": "t1"} }`, then continue the conversation by reusing the same `conversationId`/`sessionId`.
 
 `POST /aiworker/run` runs the worker in text and returns `{response,status,...}` (parse tolerantly —
 the body can contain raw newlines; the endpoint is occasionally flaky, so retry on 5xx). Pick
@@ -430,7 +409,7 @@ Editing the live worker means revert-to-draft → edit the agent at the new draf
 
 ## Principles
 
-- Ground before you draft; never invent a field that isn't in the schema (`fetch_schema.sh`).
+- Ground before you draft; never invent a field that isn't in the schema (`commotion_schema`).
 - A worker isn't usable until its agent is **enabled** — treat Phase 6 as mandatory, not optional.
 - Grounding needs both halves: knowledge must be **created and indexed** — attaching without
   indexing (or deploying before indexing finishes) means the worker has nothing to ground on.

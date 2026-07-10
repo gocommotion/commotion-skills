@@ -1,8 +1,9 @@
 # Agents, single vs multi-agent, and orchestration
 
 A **worker** is a container; its conversational behaviour lives in one or more **agents** (the
-`/aiagent` resource, called directly over HTTP — see `api-and-auth.md`). This file is the agent-side
-companion to `aiworker-lifecycle.md`.
+`/aiagent` resource, reached through the two Commotion MCP tools `commotion_request` /
+`commotion_schema` — see `api-and-auth.md`). This file is the agent-side companion to
+`aiworker-lifecycle.md`.
 
 ## Endpoints
 
@@ -15,7 +16,8 @@ companion to `aiworker-lifecycle.md`.
 | PUT | `/aiagent/{id}` | update — tune instructions / toggle `aiAgentEnabled` (`AiAgentRequest`) |
 | DELETE | `/aiagent/{id}?version=N` | delete an agent (the `version` query param is **required**) |
 
-Body shapes: `fetch_schema.sh AiAgentRequest` / `CreateStandardAgentRequest`.
+Body shapes: `commotion_schema` `{ "schema_name": "AiAgentRequest" }` / `{ "schema_name":
+"CreateStandardAgentRequest" }`.
 
 ## The golden rules (verified against dev3)
 

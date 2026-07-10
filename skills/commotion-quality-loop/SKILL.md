@@ -9,8 +9,9 @@ description: >-
   improve my renewal worker until the pass-rate is 80%", "set up X and evaluate it end to end". For a
   SINGLE step, defer to the specialist instead: build only → commotion-create-worker; scenarios only →
   commotion-generate-scenarios; run evals only → commotion-run-evals; improve only →
-  commotion-improve-worker. Calls the dev3 backend over HTTP (no MCP server).
-allowed-tools: Bash, Read, AskUserQuestion, Skill
+  commotion-improve-worker. Calls the dev3 backend through the thin Commotion MCP server (OAuth — no
+  API key in the transcript).
+allowed-tools: Read, AskUserQuestion, Skill, mcp__commotion__commotion_request
 ---
 
 # Commotion: Quality Loop (end-to-end orchestrator)
@@ -46,17 +47,18 @@ Automated evals are **voice-only** and need a **deployed** worker. So before any
 If the worker doesn't meet these, the loop's job is to get it there (build a voice worker and deploy
 it) before generating scenarios.
 
-## Transport / Step 0 — same as the specialists
+## Transport — same as the specialists
 
-This skill uses the shared helpers and the session Kong api-key. Resolve the scripts dir once and
-ensure the key is present (the sub-skills reuse the same session file, so you only do this once):
+This skill mostly delegates to the specialists via the **Skill** tool; its own platform I/O goes
+through the connected **Commotion MCP** server's two tools (`commotion_request` / `commotion_schema`)
+— no scripts, no keys. **Auth is automatic:** the MCP client owns OAuth (it opens a Commotion login
+in the browser once), so there's no key to provide. If the tools aren't available, the Commotion MCP
+isn't connected — ask the user to add/authorize it (in Claude Code: `/mcp` → **commotion** →
+Authenticate), then continue.
 
-```bash
-SCRIPTS="${CLAUDE_PLUGIN_ROOT:-/absolute/path/to/commotion-skills}/scripts"
-```
-- If the key is already set this session, reuse it; else ask via `AskUserQuestion` and write it to
-  `${TMPDIR:-/tmp}/commotion-mcp/session.env` (umask 077; **never print it**) — see any specialist's
-  Step 0 for the exact snippet. Smoke-test: `bash "$SCRIPTS/commotion_api.sh" GET /scenario/dropdown-config`.
+Confirm the Commotion MCP is connected with one read before you start: `commotion_request`
+`{ "method": "GET", "path": "/aimodel" }` (a 2xx means you're good). The specialists share the same
+connection, so this check covers the whole loop.
 
 ## Phase 0 — Scope the run  ·  HUMAN INPUT (batched, minimal)
 
