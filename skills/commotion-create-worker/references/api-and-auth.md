@@ -1,45 +1,47 @@
-# API & auth — how the skill calls dev3 directly
+# API & transport — the two Commotion MCP tools
 
-This is the single "how to call it" reference. There is **no MCP server**: every platform action is
-a plain HTTP request to the Commotion dev3 backend through the Kong gateway, made with the helper
-scripts in this plugin's `scripts/` directory. The domain reference files (`aiworker-lifecycle.md`,
-`agents-and-orchestration.md`, …) describe the *behavior*; this file is the *transport*.
+This is the single "how to call it" reference. Every platform action is one call through the
+connected **Commotion MCP** server, which holds the credential and reaches the dev3 backend for you.
+The domain reference files (`aiworker-lifecycle.md`, `agents-and-orchestration.md`, …) describe the
+*behavior*; this file is the *transport*.
 
-## The helpers
+## The two tools
 
-```bash
-SCRIPTS="$CLAUDE_PLUGIN_ROOT/scripts"            # plugin install; or the repo's scripts/ from a clone
-set -a; . "$CLAUDE_PLUGIN_ROOT/.env"; set +a     # load KONG_API_KEY etc.
+- **`commotion_request`** — one authenticated call. Arguments:
+  `{ "method": "GET|POST|PUT|DELETE", "path": "/…", "body": <JSON, for writes> }`. `path` starts
+  with `/` and may carry a query string (e.g. `/aiagent?workerId=ID&version=0`); the base URL is
+  fixed server-side, so pass a **path, not a URL**. Returns `{ "status": <http status>,
+  "body": <parsed JSON | text | null> }` — a non-2xx is **returned, not thrown**, so read the status
+  and body and adjust. `body` is a tool argument, so there are no temp files for request payloads.
+- **`commotion_schema`** — a bundled request schema. Arguments:
+  `{ "schema_name": "AiWorkerRequest", "refresh": false }`. Returns the named OpenAPI component
+  bundled self-contained with its `$defs` (refs rewritten to `#/$defs/…`). Any component name in the
+  live spec works, not just those listed below; the spec is cached server-side after the first call.
+  **Never invent a field that isn't in the schema.**
 
-bash "$SCRIPTS/commotion_api.sh" <METHOD> <PATH> [BODY]   # one authenticated call
-bash "$SCRIPTS/fetch_schema.sh"  <SchemaName> [--refresh] # a bundled request schema (cached once/session)
-```
+Read ids straight from a result — after `POST /aiworker` the new id is `body.id`; from a list call
+it's `body[0].id`. Feed that id into the next call's `path`. (No shell, no `jq` — you read the JSON
+the tool returns.)
 
-- `commotion_api.sh` injects the base URL and auth headers; `BODY` is inline JSON, `@file.json`, or
-  `-` (stdin). It prints the response body on stdout; on a non-2xx it prints the backend body and
-  exits non-zero.
-- `fetch_schema.sh` downloads `/v3/api-docs/public` once per session into a cache, then bundles the
-  named component schema with its transitive `$defs` (refs rewritten to `#/$defs/…`). It can fetch
-  **any** component schema name in the spec, not just the ones listed below.
+## Auth — handled by the MCP connection (nothing to do per call)
 
-## Auth contract (sent on every call)
+Auth is **OAuth**, owned by the MCP client, not the skill. The first time the Commotion MCP is used,
+the client opens a Commotion login in the browser, then stores the token and attaches it to every
+`commotion_request` / `commotion_schema` call automatically. **There is no API key and no per-session
+setup step — never ask the user for a token, and the raw token never enters the conversation.** The
+server maps the token to the user's Commotion identity and calls dev3 on their behalf.
 
-| Header | Value | Source |
-|--------|-------|--------|
-| `apikey` (name = `KONG_API_KEY_HEADER`) | the Kong api-key | env `KONG_API_KEY` (secret) |
-| `X-Route-Selector` | workspace selector | env `KONG_ROUTE_SELECTOR`, default `demo_workspace` |
-
-Base URL: `KONG_BACKEND_URL`, default `https://apigw.dev3.gocommotion.com`. The api-key is passed to
-curl through a temp config file so it never appears in argv / `ps` / the command transcript.
-**Secrets are env-only — never commit a key.** (Swagger UI for humans:
-`https://api-tier0.dev3.gocommotion.com/swagger-ui/index.html`.)
+If the two tools aren't available, the Commotion MCP isn't connected/authorized — ask the user to add
+and authorize it (in Claude Code: `/mcp` → **commotion** → Authenticate; a browser login opens once).
+(Swagger UI for humans: `https://api-tier0.dev3.gocommotion.com/swagger-ui/index.html`.)
 
 ## Error semantics
 
-On a non-2xx the helper exits non-zero and prints the backend body. dev3 error bodies are sometimes
-XML (`<LinkedHashMap>…`), not JSON. Surface the status + message and check it against the relevant
-reference's "edges/golden rules" before retrying — most failures are a known gotcha (missing
-`version` on a PUT, an action re-added, a live-only retrieve on a draft, …).
+`commotion_request` returns `{ "status", "body" }` for every call — a non-2xx is **not** thrown, it
+comes back with the backend body (sometimes XML, e.g. `<LinkedHashMap>…`, not JSON). Read the status
++ message and check it against the relevant reference's "edges/golden rules" before retrying — most
+failures are a known gotcha (missing `version` on a PUT, an action re-added, a live-only retrieve on
+a draft, …). Only a transport failure (backend unreachable) comes back as a tool error.
 
 ## Untrusted-id safety
 
@@ -53,7 +55,7 @@ object, the records may be under `content` / `items` / `data` / `results`. Parse
 
 ## Endpoint map
 
-Paths are relative to the base URL. "Schema" is the `fetch_schema.sh` name for the request body.
+Paths are relative to the base URL. "Schema" is the `commotion_schema` name for the request body.
 
 ### Workers & models
 | Method | Path | Purpose | Schema |
@@ -110,6 +112,8 @@ The byte PUT to the returned `preSignedUrl` is **not** through Kong — `curl -X
 | GET | `/ai-worker-tool/metadata` | built-in action catalog | — |
 | POST / PUT | `/ai-worker-tool/custom-tool[/{id}]` | custom HTTP-wrapper tool | `CreateCustomToolRequest` |
 | POST / PUT | `/ai-worker-tool/built-in-actions[/{id}]` | built-in actions tool | `CreateBuiltInActionsToolRequest` |
+| POST / PUT | `/ai-worker-tool/code-block[/{id}]` | sandboxed Python tool | `CreateCodeBlockToolRequest` |
+| POST | `/ai-worker-tool/code-block/run` | test-run source in the sandbox (stateless) | `RunCodeBlockRequest` |
 | POST / PUT | `/ai-worker-tool/mcp-server[/{id}]` | external MCP-server tool (⚠ create 500s — dev3 bug) | `CreateMcpServerRequest` / `UpdateMcpServerRequest` |
 | POST / PUT | `/ai-worker-tool/connector[/{id}]` | SaaS connector tool | `CreateConnectorToolRequest` / `UpdateConnectorToolRequest` |
 | POST | `/ai-worker-tool/credential` | store a connector credential | `CreateCredentialRequest` |
@@ -125,11 +129,12 @@ The byte PUT to the returned `preSignedUrl` is **not** through Kong — `curl -X
 | GET | `/.well-known/agent.json/{workerId}` | the worker's advertised agent card |
 | POST | `/a2a/{workerId}` | send a JSON-RPC message to the worker |
 
-## Schema names for `fetch_schema.sh`
+## Schema names for `commotion_schema`
 
 `AiWorkerRequest`, `AiAgentRequest`, `CreateStandardAgentRequest`, `CreateAiWorkerKnowledgeItemRequest`,
 `UpdateAiWorkerKnowledgeNameRequest`, `CreateAndUploadTextFileRequest`, `FileUploadUrlRequest`,
 `FileDeleteRequest`, `CreateCustomToolRequest`, `CreateBuiltInActionsToolRequest`,
+`CreateCodeBlockToolRequest`, `RunCodeBlockRequest`,
 `CreateMcpServerRequest`, `UpdateMcpServerRequest`, `CreateConnectorToolRequest`,
 `UpdateConnectorToolRequest`, `CreateCredentialRequest`, `CopilotChatContinueInput`.
 (Any other component name in `/v3/api-docs/public` works too.)

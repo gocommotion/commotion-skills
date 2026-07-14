@@ -1,9 +1,9 @@
 # Eval metrics — design, the create recipes, and the async-eval mechanism
 
 How to define and populate the quality metrics behind the **Evals dashboard** (`/eval-metric` +
-`/eval-result`). Field *shapes* come from `fetch_schema.sh EvalMetricRequest`; this file is the
-behaviour + the **verified-live recipes** (dev3, this repo's live test). Running scenarios is in
-`simulation-and-results.md`.
+`/eval-result`). Field *shapes* come from `commotion_schema` `{ "schema_name": "EvalMetricRequest" }`;
+this file is the behaviour + the **verified-live recipes** (dev3, this repo's live test). Running
+scenarios is in `simulation-and-results.md`.
 
 ## Two evaluation surfaces — don't conflate them (verified live)
 

@@ -1,14 +1,15 @@
 # Tools & capabilities
 
-How to give a worker the ability to **act**, not just talk — over the dev3 `ai-worker-tool` plane
-(called directly over HTTP — see `api-and-auth.md`). A *tool* is a named capability attached to a
-worker; the agent(s) decide when to call it during a conversation. This is the companion to
-`agents-and-orchestration.md` (what the agents are) and `knowledge-and-rag.md` (what they know).
+How to give a worker the ability to **act**, not just talk — over the dev3 `ai-worker-tool` plane,
+reached through the two Commotion MCP tools (`commotion_request` / `commotion_schema` — see
+`api-and-auth.md`). A *tool* is a named capability attached to a worker; the agent(s) decide when to
+call it during a conversation. This is the companion to `agents-and-orchestration.md` (what the agents
+are) and `knowledge-and-rag.md` (what they know).
 
 > Scope of this doc: the kinds wired today — **built-in actions**, **custom (HTTP API) tools**,
-> **MCP-server tools**, the **connector** ecosystem (integration apps + OAuth credentials +
-> webhooks), and **A2A** (calling another agent) — plus the cross-cutting model (worker-level
-> projection, HITL).
+> **code-block tools** (sandboxed Python), **MCP-server tools**, the **connector** ecosystem
+> (integration apps + OAuth credentials + webhooks), and **A2A** (calling another agent) — plus the
+> cross-cutting model (worker-level projection, HITL).
 
 ## Endpoints
 
@@ -19,6 +20,8 @@ worker; the agent(s) decide when to call it during a conversation. This is the c
 | GET | `/ai-worker-tool/metadata` | built-in action catalog (read first) |
 | POST / PUT | `/ai-worker-tool/custom-tool[/{id}]` | HTTP-wrapper tool |
 | POST / PUT | `/ai-worker-tool/built-in-actions[/{id}]` | built-in actions |
+| POST / PUT | `/ai-worker-tool/code-block[/{id}]` | sandboxed Python tool |
+| POST | `/ai-worker-tool/code-block/run` | test-run source in the sandbox (stateless) |
 | POST / PUT | `/ai-worker-tool/mcp-server[/{id}]` | external MCP server (⚠ create 500s) |
 | POST / PUT | `/ai-worker-tool/connector[/{id}]` | SaaS connector |
 | POST | `/ai-worker-tool/credential` | store a credential |
@@ -30,7 +33,8 @@ worker; the agent(s) decide when to call it during a conversation. This is the c
 | GET | `/.well-known/agent.json/{workerId}` · POST `/a2a/{workerId}` | A2A card / send |
 | POST | `/aiworker/continue` | resume a run paused on a `REQUIRE_APPROVAL` action |
 
-Body shapes: `fetch_schema.sh <Name>` — `CreateCustomToolRequest`, `CreateBuiltInActionsToolRequest`,
+Body shapes: `commotion_schema` `{ "schema_name": "<Name>" }` — `CreateCustomToolRequest`,
+`CreateBuiltInActionsToolRequest`, `CreateCodeBlockToolRequest`, `RunCodeBlockRequest`,
 `CreateMcpServerRequest`/`UpdateMcpServerRequest`, `CreateConnectorToolRequest`/`UpdateConnectorToolRequest`,
 `CreateCredentialRequest`.
 
@@ -48,11 +52,13 @@ Body shapes: `fetch_schema.sh <Name>` — `CreateCustomToolRequest`, `CreateBuil
    worker is a draft. Attach during provisioning (after the agents exist, before deploy); editing a
    live worker means reverting it to a draft first (only one draft exists per worker at a time).
 3. **Ground in the catalog + schema first.** `GET /ai-worker-tool/metadata` lists the built-in action
-   catalog (the valid `builtInActionId` codes). `fetch_schema.sh <kind-schema>` returns the live JSON
-   Schema for any kind's body — never invent a field.
-4. **The custom tool is an HTTP wrapper — there is no "code" mode.** `custom-tool` wraps an arbitrary
-   HTTP API (url + method + headers + query + body). dev3 has **no** code-snippet/script tool today,
-   despite the concept doc's wording — confirmed against the live schema.
+   catalog (the valid `builtInActionId` codes). `commotion_schema` `{ "schema_name": "<kind-schema>" }`
+   returns the live JSON Schema for any kind's body — never invent a field.
+4. **HTTP vs. code — two different kinds (verified live).** `custom-tool` wraps an arbitrary HTTP API
+   (url + method + headers + query + body). For in-process logic (transform, compute, format, validate)
+   there is now a separate **`code-block`** kind that runs **sandboxed Python** — but the sandbox has
+   **no network and no filesystem**, so anything that reaches out must still be a `custom-tool`. Pick
+   HTTP for external calls, code-block for logic on data you already have.
 5. **Every API the flow calls MUST be a registered tool — naming it in the prompt does NOT call it
    (verified live).** A prompt that says "call API 001" with no registered tool makes the model
    **fabricate a generic `api_call(...)`**; the platform returns `function 'api_call' is not
@@ -62,10 +68,11 @@ Body shapes: `fetch_schema.sh <Name>` — `CreateCustomToolRequest`, `CreateBuil
    `GET /ai-worker-tool?aiWorkerId=…&version=…` → `actionMetaDataOutputList[].actionName`. Keep the
    prompt's anti-hallucination/grounding rule (see `agents-and-orchestration.md`) even after the tool
    exists, for tool failures and empty results.
-6. **HITL is in-band — on connector & MCP-server actions only (verified live).** Set `hitlMode`
-   (`AUTO_RUN` | `REQUIRE_APPROVAL` | `ASK_FOR_DETAILS`) on a connector/MCP action in the create body;
-   **built-in actions have no `hitlMode`** (a custom tool's auto-generated action exposes the slot but
-   it isn't an input on create). A paused run resumes with `POST /aiworker/continue` (see below).
+6. **HITL is in-band — on connector, MCP-server, and code-block actions (verified live).** Set `hitlMode`
+   (`AUTO_RUN` | `REQUIRE_APPROVAL` | `ASK_FOR_DETAILS`) on a connector/MCP action, or in a code-block's
+   `codeBlockMetadata`, in the create body; **built-in actions have no `hitlMode`** (a custom tool's
+   auto-generated action exposes the slot but it isn't an input on create). A paused run resumes with
+   `POST /aiworker/continue` (see below).
 7. **Show every write before you make it.** Same rule as the rest of the skill — summarise the tool
    you're about to attach (and especially any `REQUIRE_APPROVAL` action) and get a yes.
 
@@ -75,11 +82,12 @@ Body shapes: `fetch_schema.sh <Name>` — `CreateCustomToolRequest`, `CreateBuil
 |----------------------|------|----------|
 | End a call, transfer, or another platform built-in | built-in action | `POST /ai-worker-tool/built-in-actions` |
 | Call an arbitrary HTTP/REST API you have a URL for | custom (HTTP wrapper) | `POST /ai-worker-tool/custom-tool` |
+| Run custom Python logic (transform, compute, format, validate) in a sandbox | code block | `POST /ai-worker-tool/code-block` |
 | Use actions exposed by an external MCP server | MCP-server | `POST /ai-worker-tool/mcp-server` |
 | Use a SaaS app (Zoho, Slack, …) with managed auth | connector | `POST /ai-worker-tool/connector` |
 | Call another Commotion agent | A2A | `GET /.well-known/agent.json/{id}` + `POST /a2a/{id}` |
 
-## The bodies (run `fetch_schema.sh <Name>` for the live shape)
+## The bodies (run `commotion_schema` `{ "schema_name": "<Name>" }` for the live shape)
 
 **Built-in actions** (`CreateBuiltInActionsToolRequest`) — `aiWorkerId`, `version`, and
 `builtInActionMetaDataRequestList[]`; each entry's `builtInActionId` is a `code` from
@@ -93,6 +101,23 @@ returns `400 "already configured"`, so only add the non-defaults.
 `headers` (object), `queryParams[]` and `body[]` (each field `{fieldName, fieldType:
 STRING|NUMBER|BOOLEAN|JSON|OBJECT|ANY, required, defaultValue}`). The backend auto-generates the
 action name/identifier from `name` (e.g. `lookup_order` → action `lookup-order-189`).
+
+**Code-block tool** (`CreateCodeBlockToolRequest`) — `aiWorkerId`, `version`, and `codeBlockMetadata`.
+Required in the metadata: `name` (unique within the version), `description`, `language` (**`PYTHON`**
+is the only value today), `sourceCode`. Optional: `hitlMode` (this kind **does** support it, unlike
+custom/built-in), `contextPrompt` (shown to the model for this tool), `outputAsJson` (parse stdout as
+JSON — default `false`), `toolUsageTypes[]` (`LLM` = model decides when to call, `PRE_LOAD` = runs
+before the conversation to load context; default `[LLM]`), and the variable refs `stateVariables[]`
+(`{id, placeholder?}` — omit `placeholder` for a whole *extracted* variable, set it for a *loaded* leaf
+path), `llmVariableIds[]`, `systemVariableIds[]`. Inside `sourceCode`, reference those via the
+placeholder forms `{{[statevar:..]}}`, `{{[llmvar:..]}}`, `{{[sysvar:..]}}` (a distinct `{{[...]}}`
+syntax — **not** the prompt-binding `[var:..]` token). **Unlike custom tools there is no numeric-suffix
+action name:** the tool's `actionMetaDataOutputList` is **empty** and the bindable name is
+`codeBlockMetadataOutput.name`/`lowerCaseName` (used as-is, e.g. `format_policy_number`). **The sandbox
+has no network and no filesystem** — for external calls use a `custom-tool`. Test the source before
+attaching with `POST /ai-worker-tool/code-block/run` (`RunCodeBlockRequest`: `sourceCode` + optional
+sample `stateVariableValues[]`/`llmVariableValues{}`/`systemVariableValues{}`/`outputAsJson`) →
+`{success, stdout, stderr, errorMessage, executionId, durationMs}`.
 
 **MCP-server tool** (`CreateMcpServerRequest`) — `mcpServerUrl`, `name`, `aiWorkerId`, `version`,
 `requestTimeout`, `maximumTotalTimeout`, and `mcpServerHeaderRequest` (the headers used to
@@ -134,12 +159,27 @@ POST /ai-worker-tool/built-in-actions  { aiWorkerId:<id>, version:<draft>,
 
 **Custom HTTP tool:**
 ```
-fetch_schema.sh CreateCustomToolRequest       # confirm the field shape
+commotion_schema { "schema_name": "CreateCustomToolRequest" }   # confirm the field shape
 POST /ai-worker-tool/custom-tool  { aiWorkerId:<id>, version:<draft>, customToolMetadata:{
   name:"lookup_order", description:"Fetch an order by id",
   url:"https://api.example.com/orders", customToolMethod:"GET",
   headers:{ Authorization:"Bearer …" },
   queryParams:[{ fieldName:"orderId", fieldType:"STRING", required:true, defaultValue:"" }] } }
+```
+
+**Code-block tool** (sandboxed Python — test the source first, then attach):
+```
+commotion_schema { "schema_name": "CreateCodeBlockToolRequest" }   # confirm the metadata shape
+# 1. test-run the source in the sandbox (stateless — no worker needed):
+POST /ai-worker-tool/code-block/run  { sourceCode:"raw='123456789012'\nresult='-'.join([raw[i:i+4] for i in range(0,len(raw),4)])\nprint(result)" }
+#   -> { success:true, stdout:"1234-5678-9012", executionId:"…", durationMs:… }
+# 2. attach on the draft (multi-line source is just a string in the body arg — no temp file):
+POST /ai-worker-tool/code-block  { aiWorkerId:<id>, version:<draft>, codeBlockMetadata:{
+  name:"format_policy_number", description:"Format a raw policy number as XXXX-XXXX-XXXX",
+  language:"PYTHON", sourceCode:"…" } }        # optional: hitlMode, contextPrompt, outputAsJson, toolUsageTypes
+# 3. read the bindable name back — it's NOT in actionMetaDataOutputList (empty for CODE_BLOCK):
+GET /ai-worker-tool?aiWorkerId=<id>&version=<draft>   # -> codeBlockMetadataOutput.lowerCaseName
+# then reference [tool:format_policy_number] in the agent's instructions (see "Binding" below).
 ```
 
 **MCP-server tool** (⚠ currently 500s on create — dev3 bug):
@@ -191,7 +231,9 @@ references** — exactly like knowledge. In the agent prompt editor this is the 
 The `<action name>` is the tool's **action** name, not the tool name and not its id — read it from
 `GET /ai-worker-tool?aiWorkerId=<id>&version=<draft>` → each tool's `actionMetaDataOutputList[].actionName`.
 A custom tool named `lookup_order` gets action `lookup-order-189`; connector actions look like
-`google-sheet-get-rows-686`. So:
+`google-sheet-get-rows-686`. **Code-block tools are the exception (verified live):** their
+`actionMetaDataOutputList` is empty, so read the name from `codeBlockMetadataOutput.lowerCaseName` — it is
+your `name` used as-is (no numeric suffix), e.g. `[tool:format_policy_number]`. So:
 
 ```
 GET /ai-worker-tool?aiWorkerId=<id>&version=<draft>        # find the action name(s)
@@ -273,6 +315,11 @@ A real run that attached a custom tool + a built-in action and created an "Order
 - **Custom tool** `lookup_order` → 200; backend returned action id `lookup-order-189`, `hitlMode: null`.
 - **Built-in** `transfer_to_human` → 200; first attempt also sent `end_call` → `400 "already configured"`
   (it's a default). Built-in entries carried **no** `hitlMode`.
+- **Code-block** (separate probe) → `/code-block/run` with `result=2+2;print(result)` → `200
+  {success:true, stdout:"4", …}`. `POST /ai-worker-tool/code-block` (name `format_policy_number`,
+  `language:"PYTHON"`) → 200 with `codeBlockMetadataResponse`. `GET /ai-worker-tool` → `toolType:"CODE_BLOCK"`,
+  `actionMetaDataOutputList:[]` (empty), name in `codeBlockMetadataOutput.lowerCaseName` → bind
+  `[tool:format_policy_number]`. `hitlMode` accepted (null when omitted); `toolUsageTypes` defaulted `["LLM"]`.
 - **MCP-server** → `500` on every attempt: public DeepWiki `/mcp` + `/sse`, **and** a reachable
   known-good `/mcp`. Decisive: a direct `POST /mcp initialize` to that same URL returns **200 with a
   valid MCP result** (proven from outside), yet create still 500s — so reachability, auth, protocol,

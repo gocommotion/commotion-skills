@@ -1,9 +1,11 @@
 # Knowledge & RAG grounding
 
 How to attach source material to a worker so it **grounds** its answers in it (RAG), over the dev3
-`/aiworker/knowledge` and `/aiworker/file-upload` planes (called directly over HTTP — see
-`api-and-auth.md`). This is the companion to `agents-and-orchestration.md` (the FAQ agent that
-answers strictly from this material lives there).
+`/aiworker/knowledge` and `/aiworker/file-upload` planes, reached through the two Commotion MCP tools
+(`commotion_request` / `commotion_schema` — see `api-and-auth.md`). This is the companion to
+`agents-and-orchestration.md` (the FAQ agent that answers strictly from this material lives there).
+**One exception:** the presigned-URL byte upload (rule 4 below) is a **direct PUT to Azure Blob
+Storage via `curl`** — it bypasses the backend entirely, so it is **not** an MCP call.
 
 ## Endpoints
 
@@ -19,7 +21,7 @@ answers strictly from this material lives there).
 | DELETE | `/aiworker/knowledge` | delete items (array of ids in body) |
 | POST | `/aiworker/file-upload/text` · `/aiworker/file-upload/url` · DELETE `/aiworker/file-upload/delete` | the file plane |
 
-Item shape: `fetch_schema.sh CreateAiWorkerKnowledgeItemRequest`.
+Item shape: `commotion_schema` `{ "schema_name": "CreateAiWorkerKnowledgeItemRequest" }`.
 
 ## The golden rules (verified against the dev3 spec)
 
@@ -33,8 +35,9 @@ Item shape: `fetch_schema.sh CreateAiWorkerKnowledgeItemRequest`.
    and wait until each item's `aiWorkerKnowledgeStatus` is ready** before relying on it / deploying.
 4. **Files upload via a presigned URL.** `POST …/file-upload/url` / `…/file-upload/text` return a
    `preSignedUrl` (where the bytes go) and a `fileUrlIdentifier` (how knowledge references them). The
-   byte PUT goes **straight to cloud storage — not through Kong** — so you do it yourself. The store
-   is **Azure Blob Storage**, so the PUT **must** include the header `x-ms-blob-type: BlockBlob` —
+   byte PUT goes **straight to cloud storage — not through the backend / MCP** — so you do it yourself
+   with a **direct `curl` PUT** (this one call is bash, not a `commotion_request`). The store is
+   **Azure Blob Storage**, so the PUT **must** include the header `x-ms-blob-type: BlockBlob` —
    without it Azure returns `400`. Success is **`201`** with an empty body (verified live).
 5. **`sourceUrlIdentifier` links knowledge to its file.** Pass the upload's returned
    `fileUrlIdentifier` as the knowledge item's `sourceUrlIdentifier`.
@@ -51,8 +54,8 @@ Item shape: `fetch_schema.sh CreateAiWorkerKnowledgeItemRequest`.
 ## The knowledge item (`CreateAiWorkerKnowledgeItemRequest`)
 
 Required: **`aiWorkerId`**, **`name`**, **`fileName`**, **`sourceUrlIdentifier`**, **`sourceType`**,
-**`aiWorkerKnowledgeType`**, **`category`**. Enums (run `fetch_schema.sh
-CreateAiWorkerKnowledgeItemRequest` for the live set):
+**`aiWorkerKnowledgeType`**, **`category`**. Enums (run `commotion_schema` `{ "schema_name":
+"CreateAiWorkerKnowledgeItemRequest" }` for the live set):
 
 - **`sourceType`** — `HTML`, `PDF`, `DOC`, `PPT`, `VIDEO`, `IMAGE`, `CSV`, `XLSX`, `TEXT`, `MARKDOWN`.
 - **`aiWorkerKnowledgeType`** — e.g. `TEXT_UPLOAD`, `DOCUMENT_UPLOAD`, `KNOWLEDGE_BASE`,
@@ -79,7 +82,7 @@ POST /aiworker/knowledge/index  [ "<item id>" ]
 ```
 POST /aiworker/file-upload/url  { fileName:"handbook.pdf", fileType:"OTHER" }
    -> capture preSignedUrl + fileUrlIdentifier
-# PUT the bytes yourself — straight to cloud storage, NOT through Kong:
+# PUT the bytes yourself — a DIRECT bash/curl upload to Azure Blob Storage, NOT an MCP call:
 curl -X PUT --upload-file ./handbook.pdf -H 'x-ms-blob-type: BlockBlob' "<preSignedUrl>"   # expect 201
 POST /aiworker/knowledge/bulk  [{ aiWorkerId:<id>, name:"Handbook", fileName:"handbook.pdf",
         sourceType:"PDF", aiWorkerKnowledgeType:"DOCUMENT_UPLOAD", category:"MANUAL",

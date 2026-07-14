@@ -1,9 +1,9 @@
 # Scenarios & personalities — field shapes and the sharp edges
 
-Operational behavior of the `/scenario` and `/personality` resources (called directly over HTTP — see
-`eval-domain-api.md`). Field *shapes* come from `fetch_schema.sh`; this file is the *behavior* the
-schema doesn't tell you. Running them as a simulation and reading scores is
-`commotion-run-evals/references/simulation-and-results.md`.
+Operational behavior of the `/scenario` and `/personality` resources (reached through the Commotion
+MCP `commotion_request` tool — see `eval-domain-api.md`). Field *shapes* come from `commotion_schema`;
+this file is the *behavior* the schema doesn't tell you. Running them as a simulation and reading
+scores is `commotion-run-evals/references/simulation-and-results.md`.
 
 ## A scenario, conceptually
 
@@ -62,12 +62,12 @@ existing `intents` for the `intent` tag.
 
 The call returns **only** `{scenarioGenerationId}` (it's async). **Poll** until the scenarios exist:
 
-```bash
-GEN=$(bash "$SCRIPTS/commotion_api.sh" POST /scenario/generate @gen.json | jq -r '.scenarioGenerationId')
-# poll — the generated scenarios appear filtered by the generation id:
-bash "$SCRIPTS/commotion_api.sh" GET "/scenario?scenarioGenerationId=$GEN&aiWorkerId=$WORKER_ID"
-# repeat until the array is populated (and count ≈ numScenarios). Then review them.
-```
+1. `commotion_request` `{ "method": "POST", "path": "/scenario/generate", "body": <the
+   GenerateScenarioRequest> }` → read `body.scenarioGenerationId` as `<generation-id>`.
+2. Repeatedly call `commotion_request` `{ "method": "GET", "path":
+   "/scenario?scenarioGenerationId=<generation-id>&aiWorkerId=<worker-id>" }` — the generated
+   scenarios appear filtered by the generation id. Keep polling until the returned `body` array is
+   populated (and count ≈ `numScenarios`), then review them.
 
 **Verified caveat:** there is **no generation-progress endpoint** — you only poll `/scenario`. And
 generation needs a **deployed (live)** worker: against a never-deployed worker it returns a generation

@@ -1,4 +1,4 @@
-# Eval-domain API & auth — scenarios, simulations, eval metrics, personalities
+# Eval-domain API & transport — scenarios, simulations, eval metrics, personalities
 
 The "how to call it" reference for the **testing/evaluation** half of the Commotion backend
 (scenarios, simulations, scenario-runs, eval-metrics, eval-results, personalities). This is the
@@ -6,31 +6,46 @@ The "how to call it" reference for the **testing/evaluation** half of the Commot
 `commotion-improve-worker` cross-link here. It is the companion to the worker-domain map in
 `commotion-create-worker/references/api-and-auth.md`.
 
-## One unified backend — same transport, no new scripts
+## One unified backend — the two Commotion MCP tools
 
-The scenario/simulation/eval endpoints live in the **same OpenAPI spec and behind the same Kong
-gateway** as `/aiworker` and `/aiagent`. So the quality-loop skills reuse the create-worker transport
-**unchanged**:
+The scenario/simulation/eval endpoints live in the **same OpenAPI spec** as `/aiworker` and
+`/aiagent`, reached through the **same connected Commotion MCP server** as create-worker — two tools,
+no scripts, no keys:
 
-```bash
-SCRIPTS="${CLAUDE_PLUGIN_ROOT:-/absolute/path/to/commotion-skills}/scripts"
-bash "$SCRIPTS/commotion_api.sh" <METHOD> <PATH> [BODY]      # one authenticated call
-bash "$SCRIPTS/fetch_schema.sh"  <SchemaName> [--refresh]    # a bundled request schema (cached/session)
-```
+- **`commotion_request`** — one authenticated call. Arguments:
+  `{ "method": "GET|POST|PUT|DELETE", "path": "/…", "body": <JSON, for writes> }`. `path` starts
+  with `/` and may carry a query string (e.g. `/scenario?aiWorkerId=ID`); the base URL is fixed
+  server-side, so pass a **path, not a URL**. Returns `{ "status": <http status>, "body": <parsed
+  JSON | text | null> }` — a non-2xx is **returned, not thrown**, so read the status and body and
+  adjust. `body` is a tool argument, so there are no temp files for request payloads.
+- **`commotion_schema`** — a bundled request schema. Arguments:
+  `{ "schema_name": "GenerateScenarioRequest", "refresh": false }`. Returns the named OpenAPI
+  component bundled self-contained with its `$defs` (refs rewritten to `#/$defs/…`). Any component
+  name in the live spec works, not just those listed below; the spec is cached server-side after the
+  first call. **Never invent a field that isn't in the schema.**
 
-- Same Kong api-key (session file `${TMPDIR:-/tmp}/commotion-mcp/session.env`, written in Step 0), same
-  headers (`apikey` = `KONG_API_KEY_HEADER`, `X-Route-Selector` = workspace, default `demo_workspace`),
-  same base URL (`KONG_BACKEND_URL`, default `https://apigw.dev3.gocommotion.com`).
-- **Smoke-test the eval route specifically** before relying on it: `GET /scenario/dropdown-config`
-  (verified live: served over the **same** Kong gateway/route as the worker endpoints — no separate
-  route selector needed). If it 404s while `/aiworker` works, surface that to the user.
-- Swagger UI for humans: `https://api-tier0.dev3.gocommotion.com/swagger-ui/index.html`.
+Read ids straight from a result — after `POST /scenario` the new id is `body.id`; from a list call
+it's `body[0].id`; the async `POST /scenario/generate` returns `body.scenarioGenerationId`. Feed that
+value into the next call's `path`. (No shell, no `jq` — you read the JSON the tool returns.)
+
+## Auth — handled by the MCP connection (nothing to do per call)
+
+Auth is **OAuth**, owned by the MCP client, not the skill — identical to create-worker (it's the same
+MCP server and the same one unified backend). The first time the Commotion MCP is used, the client
+opens a Commotion login in the browser, then stores the token and attaches it to every
+`commotion_request` / `commotion_schema` call automatically. **There is no API key and no per-session
+setup step — never ask the user for a token, and the raw token never enters the conversation.**
+
+If the two tools aren't available, the Commotion MCP isn't connected/authorized — ask the user to add
+and authorize it (in Claude Code: `/mcp` → **commotion** → Authenticate; a browser login opens once).
+(Swagger UI for humans: `https://api-tier0.dev3.gocommotion.com/swagger-ui/index.html`.)
 
 ## Error semantics, untrusted ids, list shape
 
-Same as the worker domain: non-2xx → helper prints the backend body and exits non-zero (surface it);
-ids interpolated into a path must match `^[A-Za-z0-9_-]+$` (backend ids already do); list endpoints
-return a bare JSON array (tolerate a `content`/`items`/`data`/`results` wrapper — parse with `jq`).
+Same as the worker domain: `commotion_request` returns `{ "status", "body" }` for every call — a
+non-2xx is **returned, not thrown**, with the backend body (surface it); ids interpolated into a path
+must match `^[A-Za-z0-9_-]+$` (backend ids already do); list endpoints return a bare JSON array
+(tolerate a `content`/`items`/`data`/`results` wrapper).
 
 ## Scoping rule (read this)
 
@@ -57,12 +72,12 @@ create must be the worker's **LIVE** version, else 500.)
   scoring with `POST /eval-result/trigger?voiceCallId=<voiceInteractionId>` (use the
   **`voiceInteractionId`**, not `voiceCallMongoId`). A scenario-run's `id` **is** the call's
   `sessionId` for `GET /eval-result/session/{sessionId}`.
-- **List bodies can contain raw newlines** (e.g. metric `evaluationCriteria`) — parse tolerantly
-  (Python `json.loads(strict=False)`; `jq` fails).
+- **List bodies can contain raw newlines** (e.g. metric `evaluationCriteria`) — `commotion_request`
+  hands back the parsed `body`, so just read those multi-line string fields as-is.
 
 ## Endpoint map
 
-Paths are relative to the base URL. "Schema" is the `fetch_schema.sh` name for the request body.
+Paths are relative to the base URL. "Schema" is the `commotion_schema` name for the request body.
 
 ### Scenarios
 | Method | Path | Purpose | Schema |
@@ -114,7 +129,7 @@ Paths are relative to the base URL. "Schema" is the `fetch_schema.sh` name for t
 | POST | `/eval-result/trigger?voiceCallId=` | force (async) metric evaluation for a call — pass the **`voiceInteractionId`** (e.g. `call_9dc8…`), NOT `voiceCallMongoId` (500s) | — |
 | GET | `/eval-result/{id}` · `/eval-result/call/{callId}` · `/eval-result/session/{sessionId}` | read eval results → `results[]` of `EvalMetricResultEntry` (`thresholdMet`, reasoning) | — |
 
-## Schema names for `fetch_schema.sh`
+## Schema names for `commotion_schema`
 
 `ScenarioRequest`, `GenerateScenarioRequest`, `ConversationScenarioGenerateRequest`,
 `BulkScenarioCreateRequest`, `PersonalityRequest`, `PersonalityPromptGenerateRequest`,

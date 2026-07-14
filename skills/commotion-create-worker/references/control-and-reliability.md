@@ -60,8 +60,9 @@ trap is only `workerAdvancedSettingsRequest`: a voice worker rejects it.
 UI this is *Voice Settings → LLM Settings*: Provider, Model, **Fallback Provider / Fallback Credential
 / Fallback Model**, Temperature. Over the API these live under
 `workerVoiceSettingsRequest.workerLLMConfigurationRequest` (provider/model/temperature) plus the
-voice-settings fallback fields — fetch the exact field names with `fetch_schema.sh AiWorkerRequest`
-(inspect `WorkerVoiceSettingsRequest` / `workerLLMConfigurationRequest`). Do **NOT** put a voice
+voice-settings fallback fields — fetch the exact field names with `commotion_schema` `{ "schema_name":
+"AiWorkerRequest" }` (inspect `WorkerVoiceSettingsRequest` / `workerLLMConfigurationRequest`). Do
+**NOT** put a voice
 worker's models in `workerAdvancedSettingsRequest`:
 - `workerAdvancedSettingsRequest` on a voice worker → `400 "Worker advanced settings can not be
   provided when voiceEnabled is true."`

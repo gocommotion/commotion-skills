@@ -1,5 +1,64 @@
 # Changelog
 
+## 2026-07-10 — 1.0.0 — Transport moves to the thin Commotion MCP server (OAuth)
+
+The skills no longer call dev3 with local scripts and a Kong api-key. All platform I/O now goes
+through the **thin Commotion MCP** server (repo `commotion-mcp`), which holds the credential and
+proxies each call. Two tools replace the old `scripts/`:
+
+- **`commotion_request`** — one authenticated call: `{ method, path, body? }` → `{ status, body }`
+  (a non-2xx is **returned, not thrown**; `path` is relative — the base URL is fixed server-side; the
+  request payload is the `body` argument, so there are no temp files). Replaces `commotion_api.sh`.
+- **`commotion_schema`** — a bundled request schema by component name: `{ schema_name, refresh? }`.
+  Replaces `fetch_schema.sh` (+ `bundle_schema.py`); the spec is bundled server-side.
+
+- **Auth is OAuth, owned by the MCP client — no API key, no "Step 0".** On first use the client opens
+  a Commotion login in the browser and attaches the user's token to every call automatically; the raw
+  token never enters the conversation. If the tools aren't connected, authorize via `/mcp` →
+  **commotion** → Authenticate.
+- **`plugin.json`** now registers the MCP server (`mcpServers.commotion`, a hosted HTTP endpoint).
+  **Removed** `scripts/` (`commotion_api.sh`, `fetch_schema.sh`, `bundle_schema.py`, `scripts/README.md`)
+  and `.env.example` — nothing on the client to configure.
+- **All five skills** rewritten: each skill's "Step 0 / Kong key" preamble is gone; every call site
+  now uses the two tools; id-threading reads the returned `body` (no `jq`) and poll loops are
+  model-driven (no `bash`/`sleep`). `allowed-tools` updated (MCP tools added; `Bash` kept only in
+  `create-worker` for the direct Azure Blob presigned-URL byte-PUT, which isn't a dev3 call; `Skill`
+  kept in the quality-loop orchestrator). Endpoint maps, schema names, and all behavioural guidance
+  are unchanged — only the transport + auth changed.
+- **Verified live end-to-end (2026-07-10):** minted an OAuth token through the login flow and drove
+  the two MCP tools against dev3 — `commotion_schema`, `GET /aimodel`, **create worker**, **add agent**
+  (list → delete default → POST new), and **add a code-block tool** — all succeeded; the eval-domain
+  read endpoints (`/scenario/dropdown-config`, `/scenario/intent-values`, `/eval-metric`,
+  `/personality`) are reachable too. Confirmed the proxy returns a non-2xx as `{status, body}` rather
+  than throwing. New gotcha captured: **worker names are globally unique** — a duplicate `POST
+  /aiworker` returns `400 "a worker with the name 'X' already exists"` (now noted in create-worker
+  Phase 5).
+
+## 2026-07-07 — 0.6.0 — Add the `code-block` tool kind (sandboxed Python)
+
+dev3 shipped a new AI-worker tool kind — **`code-block`**, custom **Python** run in a sandbox. The
+skills previously stated the opposite ("the custom tool is an HTTP wrapper — there is no code mode"),
+which is now false. Documented the kind end-to-end and corrected the stale negations, all grounded in
+the live spec and a real dev3 probe (created + listed + test-ran + cleaned up a throwaway worker).
+
+- **New endpoints** (in `references/tools-and-capabilities.md` + `references/api-and-auth.md`):
+  `POST/PUT /ai-worker-tool/code-block[/{id}]` (create/update, schema `CreateCodeBlockToolRequest`) and
+  `POST /ai-worker-tool/code-block/run` (stateless sandbox test-run, schema `RunCodeBlockRequest`).
+- **`codeBlockMetadata`:** required `name` (unique in version), `description`, `language` (`PYTHON`
+  only), `sourceCode`; optional `hitlMode` (this kind **does** support HITL), `contextPrompt`,
+  `outputAsJson`, `toolUsageTypes` (`LLM`/`PRE_LOAD`), and variable refs (`stateVariables[]`,
+  `llmVariableIds[]`, `systemVariableIds[]`) referenced in source via `{{[statevar:..]}}` /
+  `{{[llmvar:..]}}` / `{{[sysvar:..]}}` placeholders (distinct from the prompt `[var:..]` token).
+- **Binding (verified live):** for `CODE_BLOCK`, `actionMetaDataOutputList` is **empty** — the bindable
+  name is `codeBlockMetadataOutput.lowerCaseName` (your `name`, used as-is, no numeric suffix). Bind
+  with `[tool:<name>]` in the agent's `instructions`.
+- **Sandbox limits kept prominent:** no network, no filesystem — external calls still go through a
+  `custom-tool`. Updated golden rules 4 (HTTP-vs-code) and 6 (HITL now includes code-block), the
+  "picking the kind" table, the per-kind body + recipe, the binding section, and Phase 8 of the SKILL.
+- Added `CreateCodeBlockToolRequest` / `RunCodeBlockRequest` to the `fetch_schema.sh` name hints.
+  Other skills (`improve-worker` reuses this reference; scenarios/evals/quality-loop) inherit it.
+  Bumped to 0.6.0.
+
 ## 2026-07-02 — 0.5.0 — Add the `commotion-quality-loop` orchestrator (single entry point)
 
 The four skills were independent — chaining relied on the model following the "step N of the loop"

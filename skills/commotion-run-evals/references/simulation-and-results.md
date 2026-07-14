@@ -1,7 +1,7 @@
 # Simulations & results — running scenarios and reading the score
 
 How a simulation runs and how to read results (`/simulation`, `/scenario-run`, `/eval-result`). Field
-*shapes* come from `fetch_schema.sh`; this file is the verified-live behaviour (dev3).
+*shapes* come from `commotion_schema`; this file is the verified-live behaviour (dev3).
 
 ## Hard prerequisites (verified live)
 
@@ -23,14 +23,15 @@ How a simulation runs and how to read results (`/simulation`, `/scenario-run`, `
 | `maxTurns` | per-scenario cap on turns — e.g. 20 |
 | `llm` | simulator LLM (`{provider,model}`) — codes from `/aimodel`. **Optional**; omit to use the platform default simulator |
 
-Returns `SimulationResponse` with `id` (`SIM_ID`) and `scenarioRunIds`. **One sim at a time** — check
-`GET /scenario-run/active?aiWorkerId=` first (starting a second while one is active is blocked).
+Returns `SimulationResponse` with `id` (the `<sim-id>`, read from `body`) and `scenarioRunIds`. **One
+sim at a time** — check `GET /scenario-run/active?aiWorkerId=` first (starting a second while one is
+active is blocked).
 
 ## Poll → the score
 
-```bash
-bash "$SCRIPTS/commotion_api.sh" GET "/simulation/$SIM_ID"
-```
+Repeatedly call `commotion_request` `{ "method": "GET", "path": "/simulation/<sim-id>" }` and read
+these from `body`:
+
 | Field | Meaning |
 |---|---|
 | `status` / `statusLabel` | PENDING → COMPLETED (unconstrained string — gate on the counts, not a hard token) |
@@ -46,9 +47,9 @@ genuine voice run takes minutes (several PENDING polls). The `/simulation/run` p
 
 ## Per-scenario breakdown (the diagnosis fuel)
 
-```bash
-bash "$SCRIPTS/commotion_api.sh" GET "/scenario-run?simulationId=$SIM_ID"
-```
+Call `commotion_request` `{ "method": "GET", "path": "/scenario-run?simulationId=<sim-id>" }` and read
+the records from `body`.
+
 `ScenarioRunResponse`: `status` (QUEUED→RUNNING→COMPLETED→EVALUATION_*→FAILED), `scenarioEvaluationResult`
 (PASS/FAIL), `quality`, `evaluationReasoning` (**the richest field — the evaluator's turn-by-turn
 justification; this is what improve-worker reads**), `failureReason` (backend error text when a run

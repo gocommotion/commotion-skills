@@ -8,8 +8,9 @@ description: >-
   whenever the user wants to improve / iterate / fix / tune a worker to raise its eval score, or "make
   it pass" / "get the pass-rate up" — e.g. "my renewal bot only passes 60%, improve it until it's 85".
   This is step 4 of the quality loop (create-worker → generate-scenarios → run-evals →
-  **improve-worker**) and owns the loop. Calls the dev3 backend directly over HTTP (no MCP server).
-allowed-tools: Bash, Read, AskUserQuestion
+  **improve-worker**) and owns the loop. Calls the dev3 backend through the thin Commotion MCP server
+  (OAuth — no API key in the transcript).
+allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
 ---
 
 # Commotion: Improve a Worker (the quality loop)
@@ -18,8 +19,9 @@ Close the loop: take a worker that doesn't pass its scenarios well enough, **dia
 per-scenario failure reasons, **edit** it on a draft, **re-run** the evals, and repeat until the
 **pass-rate** clears the target. You supply the judgment — reading the evaluator's reasoning, deciding
 whether a failure is a prompt gap, a missing tool, missing grounding, or an over-strict guardrail, and
-making the fix. There is **no MCP server** and **no server-side "improve prompt" button** — the
-improvement is your reasoning plus the same editing machinery `commotion-create-worker` uses.
+making the fix. There is **no server-side "improve prompt" button** — the improvement is your reasoning
+plus the same editing machinery `commotion-create-worker` uses, run through the connected **Commotion
+MCP** server's two tools (`commotion_request` / `commotion_schema`).
 
 This is **step 4 of the worker quality loop, and it owns the loop**:
 
@@ -52,32 +54,26 @@ request, use the `commotion-quality-loop` orchestrator** (it invokes this skill 
 
 ## How this skill talks to the platform (read first)
 
-**Same transport** as the other skills — same helper scripts, same Kong api-key, same session file, one
-unified backend. Resolve the scripts dir once:
+**Same transport** as the other skills — all platform I/O goes through the connected **Commotion MCP**
+server (two tools, no scripts, no keys), one unified backend:
 
-```bash
-SCRIPTS="${CLAUDE_PLUGIN_ROOT:-/absolute/path/to/commotion-skills}/scripts"
-```
+- **`commotion_request`** — one authenticated call: `{ "method": "GET|POST|PUT|DELETE", "path": "/…",
+  "body": <JSON, for writes> }` → `{ "status", "body" }` (a non-2xx is **returned, not thrown** — read
+  it and adjust). Pass a **path** (the base URL is fixed server-side) and the request payload as `body`
+  — no temp files.
+- **`commotion_schema`** — a bundled request schema: `{ "schema_name": "AiWorkerRequest" }` → the JSON
+  Schema with its `$defs`. Any component name in the live spec works. **Never invent a field that isn't
+  in the schema.**
 
-> Do not use `${CLAUDE_PLUGIN_ROOT:?…}` — empty from a clone, would hard-fail.
+**Auth is automatic — there is no key.** The MCP client owns OAuth: the first time the
+Commotion MCP is used it opens a Commotion login in the browser, then attaches the user's token to
+every call. Never ask the user for a token. If the two tools aren't available, the Commotion MCP isn't
+connected — ask the user to add/authorize it (in Claude Code: `/mcp` → **commotion** → Authenticate),
+then continue.
 
-### Step 0 — Make sure the API key is available (do this first)
-
-`commotion_api.sh` reads the Kong api-key from `${TMPDIR:-/tmp}/commotion-mcp/session.env`.
-
-1. **Already set this session?** Reuse it; run the smoke test.
-2. **Otherwise** ask for the Kong api-key with `AskUserQuestion` (+ route selector only if not
-   `demo_workspace`), session-only and unsaved, then write it (**never print the key**):
-   ```bash
-   mkdir -p "${TMPDIR:-/tmp}/commotion-mcp"
-   ( umask 077; printf 'KONG_API_KEY=%s\n' '<the key the user provided>' \
-       > "${TMPDIR:-/tmp}/commotion-mcp/session.env" )
-   ```
-3. **Smoke-test:** `bash "$SCRIPTS/commotion_api.sh" GET "/scenario/dropdown-config"` → 2xx. A 401/403 =
-   wrong key. Don't start Phase 0 until this passes.
-
-- **Call** — `bash "$SCRIPTS/commotion_api.sh" <METHOD> <PATH> [BODY]`. **Schema** —
-  `bash "$SCRIPTS/fetch_schema.sh" <SchemaName>`. **Never invent a field that isn't in the schema.**
+**Read ids/fields from results, not `jq`:** `commotion_request` returns the parsed `body` — read the
+value you need straight off it (e.g. a worker's live `version` is `body.version`) and feed it into the
+next call's `path`. No shell, no `jq`.
 
 References this skill leans on:
 - This skill's loop control: `references/improvement-loop.md` (threshold, rounds, regression guard,
@@ -96,8 +92,8 @@ making it; one round = diagnose → edit draft → re-run → compare.
 ## Phase 0 — Inputs and the stop condition  ·  HUMAN INPUT
 
 Gather:
-- **`aiWorkerId`** — the worker to improve.
-- **Baseline simulation** — the `SIM_ID` of the latest run (its failing scenarios drive round 1). If
+- **`aiWorkerId`** — the worker to improve (used as `<worker-id>` in later calls).
+- **Baseline simulation** — the `<sim-id>` of the latest run (its failing scenarios drive round 1). If
   there isn't one, run `commotion-run-evals` now to produce one, then continue.
 - **Threshold** — the pass-rate to reach (`AskUserQuestion`; **default 80** — `passRate` is a **0–100
   percentage**, not a 0–1 fraction).
@@ -107,12 +103,9 @@ Confirm the loop will run **draft-only** and only deploy at the end on their app
 
 ## Phase 1 — Diagnose the failures (each round)
 
-Read the current run's failing scenarios:
-
-```bash
-bash "$SCRIPTS/commotion_api.sh" GET "/scenario-run?simulationId=$SIM_ID"
-# for each failing run, read failureReason + evaluationReasoning
-```
+Read the current run's failing scenarios: `commotion_request` `{ "method": "GET", "path":
+"/scenario-run?simulationId=<sim-id>" }` → for each failing run in the result `body`, read
+`failureReason` + `evaluationReasoning`.
 
 Classify each failure and map it to a fix (the **failure → fix taxonomy** — full version in
 `references/improvement-loop.md`):
@@ -131,23 +124,21 @@ Prioritize the fixes that clear the most failing scenarios. Present the diagnosi
 
 ## Phase 2 — Edit on a DRAFT (never on live)
 
-Agents/config are editable only on a **draft**. Establish the draft version you'll edit and capture it
-into `DRAFT_VERSION` (Phase 3 and Phase 5 reuse it):
+Agents/config are editable only on a **draft**. Establish the draft version you'll edit and hold it as
+`<draft-version>` (Phase 3 and Phase 5 reuse it):
 
 - **Worker is live** → read its current version, then mint a new draft version (e.g. N+1) alongside the
   still-serving live version:
-  ```bash
-  LIVE_VERSION=$(bash "$SCRIPTS/commotion_api.sh" GET "/aiworker/$WORKER_ID" | jq -r '.version')
-  DRAFT_VERSION=$(bash "$SCRIPTS/commotion_api.sh" POST "/aiworker/$WORKER_ID/draft?version=$LIVE_VERSION" | jq -r '.version')
-  ```
+  1. `commotion_request` `{ "method": "GET", "path": "/aiworker/<worker-id>" }` → the live version is
+     `body.version` (call it `<live-version>`).
+  2. `commotion_request` `{ "method": "POST", "path": "/aiworker/<worker-id>/draft?version=<live-version>" }`
+     → the new draft's version is `body.version` (call it `<draft-version>`).
 - **Worker is already a draft** → there's no live version to read (`GET /aiworker/{id}` is **live-only**
-  and 400s on a draft-only worker). Get the draft's version from the version history (note the
-  **`.items`** wrapper) and edit in place:
-  ```bash
-  DRAFT_VERSION=$(bash "$SCRIPTS/commotion_api.sh" GET "/aiworker/$WORKER_ID/versions" | jq -r '.items | map(select(.status=="DRAFT"))[0].version')
-  ```
-  (Only one draft can exist at a time, so there's at most one DRAFT entry. Don't POST `/draft` again.
-  A superseded live version shows status **PAUSED**.)
+  and 400s on a draft-only worker). Get the draft's version from the version history — `commotion_request`
+  `{ "method": "GET", "path": "/aiworker/<worker-id>/versions" }` → in the result `body`, find the entry
+  under the **`items`** wrapper whose `status` is `DRAFT` and read its `version` as `<draft-version>`;
+  edit in place. (Only one draft can exist at a time, so there's at most one DRAFT entry. Don't POST
+  `/draft` again. A superseded live version shows status **PAUSED**.)
 
 Then apply the diagnosed fixes on that draft version.
 
@@ -177,9 +168,9 @@ Point the test set at the draft version and re-run, reusing `commotion-run-evals
 - Ensure scenarios exist **for the draft version** (a draft-of-a-live worker is simulatable; a sim
   takes scenarioIds + the worker `version`). If the fresh draft version lacks them, recreate/point the
   test set at it via `commotion-generate-scenarios` — see `references/improvement-loop.md`.
-- Check `GET /scenario-run/active?aiWorkerId=$WORKER_ID` (sequential), then `POST /simulation/run` with
+- Check `GET /scenario-run/active?aiWorkerId=<worker-id>` (sequential), then `POST /simulation/run` with
   `version` = the **draft** version. Poll `GET /simulation/{id}` to COMPLETED and read the new
-  `passRate`. This becomes the round's result and the next round's `SIM_ID`.
+  `passRate`. This becomes the round's result and the next round's `<sim-id>`.
 
 ## Phase 4 — Loop control (the decision each round)
 
@@ -198,12 +189,10 @@ Show it to the user as the loop progresses.
 Only after the loop stops:
 - Summarize the final draft (version, the edits made across rounds, final `passRate` vs target).
 - `AskUserQuestion`: deploy now or keep as draft.
-- On a clear **yes**:
-  ```bash
-  bash "$SCRIPTS/commotion_api.sh" POST "/aiworker/$WORKER_ID/deploy?version=$DRAFT_VERSION"
-  ```
+- On a clear **yes**: `commotion_request` `{ "method": "POST", "path":
+  "/aiworker/<worker-id>/deploy?version=<draft-version>" }`.
 - Otherwise leave it as a draft (it persists; the user can deploy later). Confirm live with
-  `GET "/aiworker/$WORKER_ID"`.
+  `commotion_request` `{ "method": "GET", "path": "/aiworker/<worker-id>" }`.
 
 ## Principles
 
