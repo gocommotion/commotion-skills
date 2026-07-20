@@ -1,6 +1,6 @@
 {
   "name": "commotion",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Commotion Agent Operations \u2014 Claude Skills that build, configure, deploy, test, evaluate, and iteratively improve voice/chat workers. The skills carry the endpoints and orchestrate the full worker quality loop (create \u2192 generate scenarios \u2192 run evals \u2192 improve); a thin Commotion MCP server holds auth (OAuth) and proxies each call, so no API key ever touches the transcript.",
   "author": {
     "name": "Commotion AI"
