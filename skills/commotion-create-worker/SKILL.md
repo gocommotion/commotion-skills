@@ -3,7 +3,8 @@ name: commotion-create-worker
 description: >-
   Build and configure a Commotion voice or chat worker (AI agent) from a described goal, end to
   end — ground in the live config schema, interview for the goal, draft the worker (name, system
-  prompt, voice + languages, guardrails), provision and enable its agent(s), and deploy on approval.
+  prompt, voice + languages, guardrails), provision and enable its agent(s), configure Settings (pronunciation dictionaries,
+  state variables) when the use case needs them, and deploy on approval.
   Use this whenever the user wants to create / build / set up a worker, voice agent, assistant, or
   bot for a use case — e.g. "make a voice agent that books dealership test drives in Hindi and
   English", "set up a multi-agent support bot for my client" — even if they don't say the word
@@ -67,8 +68,8 @@ the single "how to call it" reference. Field *shapes* always come from `commotio
 reference files are the *behavior* the schema doesn't tell you.
 
 **Execution rules:** one phase at a time, in order; read the reference named by a phase before you
-act on it; show every write before you make it. Optional phases (7, 8) only run when the goal needs
-them.
+act on it; show every write before you make it. Optional phases (7, 8, 8.5) only run when the goal
+needs them.
 
 ## Phase 0 — Ground yourself in the real schema (always, before drafting)
 
@@ -84,7 +85,10 @@ Never invent field names or values. Read the contracts from the server first:
 
 For the agent body fields (`AiAgentRequest`), see `references/agents-and-orchestration.md`; for
 attaching source material / FAQ grounding, see `references/knowledge-and-rag.md`; for guardrails,
-fallback models, and structured output, see `references/control-and-reliability.md`.
+fallback models, and structured output, see `references/control-and-reliability.md`; for Settings —
+pronunciation dictionaries and state variables (Phase 8.5) — see
+`references/settings-variables-pronunciation.md` (their request schemas are `AiPronunciationDictRequest`
+and `AiWorkerVariableSchemaRequest`).
 
 If the goal implies the worker must **act** (do something, not just answer), also ground in the tool
 surface: `commotion_request` `GET /ai-worker-tool/metadata` (the built-in action catalog) and
@@ -358,10 +362,38 @@ The full per-kind recipes, body shapes, HITL, and the projection model are in
   defect, not your input; don't promise this kind until BE fixes it.
 - **Auto-capabilities (turn on, don't attach):** *reasoning* via
   `advancedSettingsRequest.languageModelSettingsRequest.reasoningEffortEnabled:true` +
-  `reasoningEffort:LOW|MEDIUM|HIGH` (model must support it — see `/aimodel`); *state* appears on its own
-  when the worker has it — agents read it in the prompt via `[var:<name>]`. Neither is a tool.
+  `reasoningEffort:LOW|MEDIUM|HIGH` (model must support it — see `/aimodel`). Not a tool. **State
+  variables** are their own resource (configured in Phase 8.5, `/ai-worker-variable-schema`), also not
+  a tool — an agent reads one in its prompt via `[var:<title>]`; a `LOADED` variable references a tool
+  you created here.
 - **Show every write before you make it** (especially each HITL gate); confirm with
   `GET /ai-worker-tool?aiWorkerId=<worker-id>&version=0`.
+
+## Phase 8.5 — Settings (pronunciation dictionaries + state variables — when the use case needs them)
+
+Optional, like Phases 7–8. Two worker **Settings** subsystems, each its own worker-scoped resource
+created on the **draft** (body carries the worker id + `version`), shown before each write. Full detail,
+field shapes, and the verified-live gotchas are in `references/settings-variables-pronunciation.md`.
+
+- **Pronunciation dictionary** (`/ai-pronunciation-dict`) — when the worker speaks brand names,
+  acronyms, SKUs, or non-English terms the TTS mangles, add an entry per term:
+  `POST /ai-pronunciation-dict {aiWorkerId, version, inputText, pronunciation, pronunciationType}`
+  (`pronunciationType` ∈ `ALIAS`|`IPA`|`CMU`|`SYMBOL`|`PHONEME` — prefer `ALIAS`, e.g. `NPCL` →
+  `"N-P-C-L"`). The created id comes back as **`pronunciationDictId`** (not `id`); `inputText` is unique
+  per worker+version. List with `GET /ai-pronunciation-dict?workerId=<id>&version=<v>`.
+- **State variables** (`/ai-worker-variable-schema`) — when the worker must remember data across the
+  call (so it doesn't re-ask) or pre-load caller data from a tool. `POST /ai-worker-variable-schema
+  {workerId, version, title, variableType, variableSource, availability, …}`. **`EXTRACTED`** = the LLM
+  pulls it from the conversation (nothing else needed); **`LOADED`** = fetched from a tool and
+  **requires `loadingStrategy` (`PRE_LOADING`/`DYNAMIC_LOADING`) + `toolReference`** (400 otherwise). The
+  id comes back as **`id`**. **Creating a variable does not bind it** — the consuming agent must
+  reference it in `instructions` as `[var:<title>]` (`PUT /aiagent/{id}`, Phase 6 pattern). A `LOADED`
+  variable's `toolReference` points at a tool from Phase 8, so create that tool first.
+
+Both resources are edited by id (`PUT /ai-pronunciation-dict/{pronunciationDictId}` /
+`PUT /ai-worker-variable-schema/{variableId}`) and bulk-deleted (array body). This is a common cause
+of "the agent re-asks for info it already has" and "the bot mispronounces our brand" — reach for state
+variables and pronunciation entries respectively (also see `commotion-improve-worker`).
 
 ## Phase 9 — Deploy readiness gate
 
@@ -423,6 +455,9 @@ Editing the live worker means revert-to-draft → edit the agent at the new draf
 - Guardrails + fallback models are worker-definition config (set on the draft, shown before write);
   guardrail order is backend-enforced. Structured output is **single-agent only** (`structuredOutputEnabled`
   + a `STRUCTURED_OUTPUT` agent).
+- Settings (pronunciation dictionaries, state variables) are **their own worker-scoped resources**
+  created on the draft, not fields on `AiWorkerRequest`. A state variable isn't used until an agent
+  names it in its prompt (`[var:<title>]`); a `LOADED` variable needs a `loadingStrategy` + a tool.
 - Agents are editable only on a draft; editing a live worker means reverting it to a draft first.
 - If a platform call errors, the helper surfaces the backend's status + message — read it and check
   it against the reference notes before retrying.

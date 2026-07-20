@@ -127,6 +127,27 @@ a styled Knowledge chip — but that is **cosmetic only**. Grounding works at ru
 run answered correctly from the document with the token written purely via `PUT /aiagent/{id}`. So you
 do **not** need the UI `/Knowledge` command — writing the token into `instructions` is sufficient.
 
+## Knowledge settings — indexing / embedding / chunking (`km-setting`, verified live)
+
+A worker's RAG **indexing/embedding/chunking** config is a separate, **auto-provisioned** setting (one
+per worker) — you don't create it, you edit it in place. The defaults are sensible; only touch this
+when the use case needs a specific chunking/embedding strategy.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/aiworker/km-setting/metadata` | valid indexing/embedding/chunking options |
+| GET | `/aiworker/km-setting/{entityId}` | the worker's setting (`entityId` = the worker id) |
+| PUT | `/aiworker/km-setting/setting/{settingId}` | update it (`KMSettingUpdateRequest`) |
+
+**Verified live (dev3, 2026-07-20):** `GET /aiworker/km-setting/<workerId>` returns the setting object
+whose top-level keys include **`settingId`**, `entityId` (= the worker id), `indexName`, `status`,
+`indexId`, and the `indexingConfig` / `embeddingConfig` / `chunkingConfig` blocks. So the flow is:
+`GET /aiworker/km-setting/<workerId>` → read `settingId` → `PUT /aiworker/km-setting/setting/<settingId>`
+with `KMSettingUpdateRequest` (`entityId`, `entityType`, `collectionName`, `indexingConfig`,
+`embeddingConfig`, `chunkingConfig` (per file-type: `pdf`/`markdown`/`csv`/`xlsx`/`docx`/`image`),
+`piiMaskingConfig`). Ground the exact shapes with `commotion_schema { "schema_name":
+"KMSettingUpdateRequest" }` and the metadata endpoint before writing.
+
 ## Where this sits in the create-worker flow
 
 Attach knowledge **after the agent(s) are provisioned and before deploy** (SKILL.md Phase 7). For an

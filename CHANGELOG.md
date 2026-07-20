@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-07-20 — 1.2.0 — Settings: pronunciation dictionaries + state variables (and eval-domain reconcile)
+
+The backend shipped worker **Settings** APIs the skills didn't cover. Added them to
+`commotion-create-worker` (they're worker-definition config, so they extend that skill rather than a
+new one) and reconciled the eval-domain endpoint map against the live spec. All grounded in the live
+OpenAPI spec (`/v3/api-docs/public`, 215 paths) and verified with real CRUD against a throwaway voice
+worker on dev3 (`6a5dce0cff0a5eea9a86c6c9`, draft v0).
+
+- **New reference `settings-variables-pronunciation.md`** (under `commotion-create-worker/references/`)
+  + **Phase 8.5** in the SKILL, covering two worker-scoped resources (full CRUD; created on a draft,
+  `(worker, version)`-scoped — **not** fields on `AiWorkerRequest`):
+  - **Pronunciation dictionaries** (`/ai-pronunciation-dict`, `AiPronunciationDictRequest`) — teach the
+    TTS domain terms. `pronunciationType` ∈ `ALIAS`/`IPA`/`CMU`/`SYMBOL`/`PHONEME`; `inputText` unique
+    per worker+version. **Gotcha (verified live):** the id comes back as **`pronunciationDictId`**, not
+    `id`; a duplicate `inputText` → `400 "… already exists."`
+  - **State variables** (`/ai-worker-variable-schema`, `AiWorkerVariableSchemaRequest`) — values tracked
+    across a call. `variableSource` `EXTRACTED` (LLM pulls from the conversation) vs `LOADED` (fetched
+    from a tool). **Gotchas (verified live):** id comes back as **`id`**; a `LOADED` variable **requires
+    `loadingStrategy`** (`400 "Loading strategy is required when variable source is LOADED"`) + a
+    `toolReference`; creating a variable does **not** bind it — an agent must reference `[var:<title>]`
+    in its prompt (this replaces the old "state appears on its own" note in Phase 8).
+- **Knowledge settings** (`/aiworker/km-setting`, `KMSettingUpdateRequest`) documented in
+  `knowledge-and-rag.md`: an **auto-provisioned** indexing/embedding/chunking config edited by id —
+  `GET /aiworker/km-setting/{workerId}` → read `settingId` → `PUT …/setting/{settingId}`. (This is what
+  `KMSettingUpdateRequest` actually is — Knowledge Settings, **not** conversation analysis, which has no
+  dedicated endpoint in the current spec.)
+- **Eval-domain reconcile** (`eval-domain-api.md`): added the newly-shipped surfaces —
+  `/eval-insight-group` (+ `/refresh`, `EvalInsightGroupRequest`; grouped failure-mode analysis),
+  `/eval-result/count` and the filterable `/eval-result` list, and `/schedule` (`ScheduleConfigInput`,
+  delayed-webhook scheduler). Marked as secondary/analysis surfaces — the loop's gate is still the
+  scenario `passRate`. (`PersonalityRequest`'s voice/noise fields — `speakingSpeed`,
+  `interruptionLevel`, `backgroundNoise*`, `packetLoss` — were already documented in
+  `scenarios-and-personalities.md`, so no change there.)
+- **`improvement-loop.md`** failure→fix taxonomy gained two rows: re-asks for known data → define a
+  **state variable**; mispronounces a brand/acronym → add a **pronunciation dictionary** entry.
+- Endpoint map + `commotion_schema` name list in `api-and-auth.md` extended with the three new families
+  (`AiPronunciationDictRequest`, `AiWorkerVariableSchemaRequest`, `KMSettingUpdateRequest`). Bumped
+  `plugin.json` / `marketplace.json` to 1.2.0.
+- **Not yet verified (need a live conversation, not config round-trip):** that the TTS applies a
+  pronunciation entry at runtime, that an `EXTRACTED` variable is populated from a real call, and that a
+  `LOADED` variable fetches from its tool. Noted in the new reference's "verified live" block.
+
 ## 2026-07-20 — 1.1.0 — Interim in-session login (until the Commotion browser login ships)
 
 Each skill now **signs in in-session** before calling the platform: it asks for the user's Commotion

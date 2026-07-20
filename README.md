@@ -57,6 +57,7 @@ skills/
       knowledge-and-rag.md            # attach + index source material; grounding tokens
       tools-and-capabilities.md       # built-in/custom/code-block/MCP-server/connector tools, A2A, HITL
       control-and-reliability.md      # guardrails, fallback models, structured output
+      settings-variables-pronunciation.md  # Settings: pronunciation dictionaries + state variables
   commotion-generate-scenarios/
     SKILL.md                          # build a test set: personalities + scenarios for a worker/version
     references/
