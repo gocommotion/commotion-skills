@@ -10,7 +10,7 @@ description: >-
   This is step 4 of the quality loop (create-worker → generate-scenarios → run-evals →
   **improve-worker**) and owns the loop. Calls the dev3 backend through the thin Commotion MCP server
   (OAuth — no API key in the transcript).
-allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
+allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_login, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
 ---
 
 # Commotion: Improve a Worker (the quality loop)
@@ -22,6 +22,12 @@ whether a failure is a prompt gap, a missing tool, missing grounding, or an over
 making the fix. There is **no server-side "improve prompt" button** — the improvement is your reasoning
 plus the same editing machinery `commotion-create-worker` uses, run through the connected **Commotion
 MCP** server's two tools (`commotion_request` / `commotion_schema`).
+
+**Sign in first (interim, until the browser login ships):** before any `commotion_request` /
+`commotion_schema` call, ask the user for their **Commotion email + password** (`AskUserQuestion`),
+call **`commotion_login`** `{ user_id, password, workspace_id? }`, and pass the returned
+`access_token` as the **`token`** argument on every subsequent tool call this session (~1h; re-run on
+a `401`). When BE's browser login lands this step goes away (auth becomes automatic).
 
 This is **step 4 of the worker quality loop, and it owns the loop**:
 

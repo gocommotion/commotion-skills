@@ -10,7 +10,7 @@ description: >-
   it against the worker". This is step 2 of the quality loop (create-worker → **generate-scenarios** →
   run-evals → improve-worker). Calls the dev3 backend through the thin Commotion MCP server (OAuth — no
   API key in the transcript).
-allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
+allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_login, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
 ---
 
 # Commotion: Generate Scenarios & Personalities
@@ -22,6 +22,12 @@ happy/failure/jailbreak paths matter, what each scenario's success looks like �
 platform I/O through the connected **Commotion MCP** server's two tools (`commotion_request` /
 `commotion_schema`). This skill carries the endpoints, and you fetch request schemas live from the
 OpenAPI spec. **Every write is shown to the user and approved before it happens.**
+
+**Sign in first (interim, until the browser login ships):** before any `commotion_request` /
+`commotion_schema` call, ask the user for their **Commotion email + password** (`AskUserQuestion`),
+call **`commotion_login`** `{ user_id, password, workspace_id? }`, and pass the returned
+`access_token` as the **`token`** argument on every subsequent tool call this session (~1h; re-run on
+a `401`). When BE's browser login lands this step goes away (auth becomes automatic).
 
 This is **step 2 of the worker quality loop**:
 
