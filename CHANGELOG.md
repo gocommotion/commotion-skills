@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-20 — 1.1.0 — Interim in-session login (until the Commotion browser login ships)
+
+Each skill now **signs in in-session** before calling the platform: it asks for the user's Commotion
+email + password (`AskUserQuestion`), calls the new **`commotion_login`** MCP tool to get a per-user
+access token, and passes that token on every `commotion_request` / `commotion_schema` call — so dev3
+attributes actions to the signed-in user. This is a stopgap until the Commotion **browser login**
+ships (then auth becomes automatic again, no in-chat credentials). Adds
+`mcp__commotion__commotion_login` to each skill's `allowed-tools`; the full flow lives in
+`commotion-create-worker/references/api-and-auth.md`.
+
 ## 2026-07-10 — 1.0.0 — Transport moves to the thin Commotion MCP server (OAuth)
 
 The skills no longer call dev3 with local scripts and a Kong api-key. All platform I/O now goes

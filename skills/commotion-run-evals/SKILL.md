@@ -10,7 +10,7 @@ description: >-
   generate-scenarios → **run-evals** → improve-worker). Needs scenarios to exist first
   (commotion-generate-scenarios). Calls the dev3 backend through the thin Commotion MCP server
   (OAuth — no API key in the transcript).
-allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
+allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_login, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
 ---
 
 # Commotion: Run Evals (Simulate + Score)
@@ -20,6 +20,12 @@ percentage, 0–100, of scenarios whose goal the worker achieved), plus a per-sc
 failure failed. Optionally define **eval metrics** (Hallucination, CSAT, latency, custom domain rules)
 for richer signal. You make the platform I/O through the connected **Commotion MCP** server's two tools
 (`commotion_request` / `commotion_schema`). **Every write (metrics, the run) is shown to the user and approved first.**
+
+**Sign in first (interim, until the browser login ships):** before any `commotion_request` /
+`commotion_schema` call, ask the user for their **Commotion email + password** (`AskUserQuestion`),
+call **`commotion_login`** `{ user_id, password, workspace_id? }`, and pass the returned
+`access_token` as the **`token`** argument on every subsequent tool call this session (~1h; re-run on
+a `401`). When BE's browser login lands this step goes away (auth becomes automatic).
 
 This is **step 3 of the worker quality loop**:
 
