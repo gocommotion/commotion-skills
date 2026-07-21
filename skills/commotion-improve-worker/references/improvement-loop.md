@@ -68,7 +68,10 @@ Scenarios and eval-metrics are `(aiWorkerId, version)`-scoped, and **list endpoi
 ## Failure → fix taxonomy (the full version)
 
 Read each failing run's `failureReason` + `evaluationReasoning` (`GET /scenario-run?simulationId=`),
-classify, and map to a fix. Reuse the create-worker references for the *how*.
+classify, and map to a fix. Reuse the create-worker references for the *how*. Some signals live in the
+**transcript**, not the reasoning — a **mispronunciation** surfaces as the tester-bot's ASR mis-hearing a
+term (the transcript wrote a different word than the worker said), so scan the conversation too, not only
+`evaluationReasoning`.
 
 | Symptom in `evaluationReasoning` | Root cause | Fix | Reference |
 |---|---|---|---|
@@ -78,6 +81,8 @@ classify, and map to a fix. Reuse the create-worker references for the *how*.
 | Couldn't answer a question that's in the source docs | Missing/unbound grounding | **Attach + index knowledge**, bind it in the prompt with `[knowledge:<name>\|id:<id>]` | knowledge-and-rag.md |
 | Switched language when the caller read digits/policy-no in English | Language rule missing | Add the **don't-switch-on-English-digits** rule to the prompt | aiworker-lifecycle.md |
 | Re-asked for info already given; spun in a loop | Anti-repetition missing | Add the **don't-re-ask / call-each-tool-once / take-failure-path-once** rules | agents-and-orchestration.md |
+| Re-asked for data that should be known up front (account/profile/tier), or forgot a value the caller gave earlier | No state variable | Define a **state variable** — `EXTRACTED` (capture-and-remember what the caller says) or `LOADED`/`PRE_LOADING` (fetch it once from a tool at call start) — and reference `[var:<title>]` in the prompt | settings-variables-pronunciation.md |
+| Mispronounced a brand name, acronym, or SKU (TTS said it wrong) | No pronunciation entry | Add a **pronunciation dictionary** entry (usually `ALIAS`, e.g. `NPCL` → `"N-P-C-L"`) | settings-variables-pronunciation.md |
 | Answered a forbidden/off-limits topic, or gave advice it shouldn't | Guardrail gap | Add **forbidden words** / a **custom guardrail** ("no financial/medical advice") | control-and-reliability.md |
 | Blocked a legitimate request | Guardrail too strict | Loosen the toxicity threshold / narrow the forbidden list / fix the custom check | control-and-reliability.md |
 | Ended the call prematurely or never ended it | Termination logic | Fix the end-call conditions in the prompt; ensure the `end_call` built-in is available | tools-and-capabilities.md |

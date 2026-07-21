@@ -111,7 +111,14 @@ before the conversation to load context; default `[LLM]`), and the variable refs
 (`{id, placeholder?}` — omit `placeholder` for a whole *extracted* variable, set it for a *loaded* leaf
 path), `llmVariableIds[]`, `systemVariableIds[]`. Inside `sourceCode`, reference those via the
 placeholder forms `{{[statevar:..]}}`, `{{[llmvar:..]}}`, `{{[sysvar:..]}}` (a distinct `{{[...]}}`
-syntax — **not** the prompt-binding `[var:..]` token). **Unlike custom tools there is no numeric-suffix
+syntax — **not** the prompt-binding `[var:..]` token). The `id` in each `stateVariables[]` entry is a
+state variable's **`id`** returned by `POST /ai-worker-variable-schema` — **create the variable in
+Phase 8.5 first** (see `settings-variables-pronunciation.md`); in the platform UI this same reference is
+the **`@variable`** insert (e.g. `@citizen_id`). So one state variable is consumable two ways: an agent
+reads it via the prompt token `[var:<title>]`, and code reads it via a code-block `stateVariables[]`
+entry. **The placeholder is injected as a pre-quoted literal** (verified live): write
+`x = {{[statevar:title]}}` — the sandbox produces `x = "refund request"` — **not** `x = "{{[statevar:title]}}"`
+(the extra quotes yield a `SyntaxError`). **Unlike custom tools there is no numeric-suffix
 action name:** the tool's `actionMetaDataOutputList` is **empty** and the bindable name is
 `codeBlockMetadataOutput.name`/`lowerCaseName` (used as-is, e.g. `format_policy_number`). **The sandbox
 has no network and no filesystem** — for external calls use a `custom-tool`. Test the source before
@@ -218,8 +225,9 @@ actions immediately and add the credential later (`PUT /ai-worker-tool/connector
 
 Creating a tool attaches it to the **worker**, but an **agent only calls a tool its prompt
 references** — exactly like knowledge. In the agent prompt editor this is the **`/` command**
-("Type / to add tools and more"); over the API it is a **mention token in the agent's
-`instructions`** (set with `PUT /aiagent/{id}`). The tokens (all verified live):
+("Type / to add tools and more"); over the API it is a **mention token in the agent's `instructions`**
+(composed into the prompt and set the **Phase-6 way** — POST-create / re-POST so it renders in the UI;
+a bare `PUT` writes the runtime only). The tokens (all verified live):
 
 | What | Token | Has id? |
 |------|-------|---------|
@@ -237,13 +245,18 @@ your `name` used as-is (no numeric suffix), e.g. `[tool:format_policy_number]`. 
 
 ```
 GET /ai-worker-tool?aiWorkerId=<id>&version=<draft>        # find the action name(s)
-PUT /aiagent/<agentId>  { …, instructions:
+# compose the token into instructions and (re-)POST the agent so it renders in the UI:
+POST /aiagent  { …, instructions:
   "…When the caller gives an order id, look it up.\n\n[tool:lookup-order-189]\n\n…" }
 ```
 
-Verified live: writing `[tool:lookup-order-189]` into an agent's `instructions` via `PUT /aiagent/{id}`
-round-trips intact (same as the `/Knowledge` token). **Only the agents whose prompt carries the
-`[tool:…]` mention call that tool** — that is how you scope a worker tool to a specific agent.
+Verified live: writing `[tool:lookup-order-189]` into an agent's `instructions` **round-trips intact and
+works at runtime** (a Test-Agent run called the tool), same as the `/Knowledge` token. A bare
+a bare `PUT /aiagent/{id}` sets the runtime `instructions` but the UI prompt editor won't reflect it — so
+**(re-)`POST` the prompt-bearing agent for UI visibility** (Phase-6 rule — **verified live 2026-07-21**:
+a PUT on the auto-provisioned default left the editor **blank**; a fresh POST **rendered** the prompt,
+with the `[tool:…]`/`[var:…]` tokens shown as **plain text**, not styled chips). **Only the agents whose
+prompt carries the `[tool:…]` mention call that tool** — that is how you scope a worker tool to a specific agent.
 Built-in actions (`end_call`, `transfer_to_human`, …) are referenced by their action name the same
 way; describe when to use them in the prose.
 
@@ -330,8 +343,9 @@ A real run that attached a custom tool + a built-in action and created an "Order
   `POST /ai-worker-tool/connector` with that action and **no credential** → 200
   (`hitlMode:REQUIRE_APPROVAL` round-tripped). `POST /ai-worker-tool/credential` with a dummy Clockify
   key → `200 {"id":"","success":false}` (keys are validated — dummies don't take).
-- **Binding** — embedding `[tool:lookup-order-189]` in the Order Concierge agent's `instructions` via
-  `PUT /aiagent/{id}` round-tripped intact, wiring the custom tool to that agent. Token vocabulary across
+- **Binding** — embedding `[tool:lookup-order-189]` in the Order Concierge agent's `instructions`
+  round-tripped intact at the API, wiring the custom tool to that agent (for a UI-visible prompt,
+  POST-create the agent — a bare PUT is runtime-only). Token vocabulary across
   the workspace (a 500-agent scan): `[tool:…]` ×540 (name only, no id), `[knowledge:…|id:…]` ×280,
   `[var:…]` ×390, `[agent:…|id:…]` ×90.
 - Error bodies are **XML** (`<LinkedHashMap>…`), not JSON. Tools attach only on the **draft** (v2);

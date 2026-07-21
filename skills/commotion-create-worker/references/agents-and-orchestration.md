@@ -13,7 +13,7 @@ A **worker** is a container; its conversational behaviour lives in one or more *
 | GET | `/aiagent/{id}?version=N` | one agent's full record |
 | POST | `/aiagent` | create an agent on a DRAFT worker (`AiAgentRequest`) |
 | POST | `/aiagent/standard` | create a *standard* agent, e.g. FAQ (`CreateStandardAgentRequest`) |
-| PUT | `/aiagent/{id}` | update — tune instructions / toggle `aiAgentEnabled` (`AiAgentRequest`) |
+| PUT | `/aiagent/{id}` | toggle `aiAgentEnabled`; sets runtime `instructions` **but leaves the UI editor blank** — POST-create for a UI-visible prompt (`AiAgentRequest`) |
 | DELETE | `/aiagent/{id}?version=N` | delete an agent (the `version` query param is **required**) |
 
 Body shapes: `commotion_schema` `{ "schema_name": "AiAgentRequest" }` / `{ "schema_name":
@@ -78,12 +78,12 @@ freeing the slot:
 - The empty editor box is otherwise **not** a sign of a missing prompt — `GET /aiagent/{id}`
   (`instructions`) + a `POST /aiworker/run` test are the source of truth, not the editor.
 - To revise a POST-created agent's prompt, edit it in the UI (syncs both) or re-`POST` a fresh agent
-  (delete the old via `DELETE /aiagent/{id}?version=N`); a plain API `PUT` may update the runtime
-  without refreshing the editor.
+  (delete the old via `DELETE /aiagent/{id}?version=N`); a plain API `PUT` updates the runtime only and
+  does **not** refresh the editor — don't use it for the prompt.
 
 **Voice worker default agent (verified live).** A voice worker's auto-provisioned default agent is
 named **"Voice Agent"** (chat workers get "Chat Agent") and starts disabled. The request field
-`agentType` is echoed in the **response** as **`aiAgentType`** — so after `PUT /aiagent/{id}` with
+`agentType` is echoed in the **response** as **`aiAgentType`** — so after a `POST`/`PUT` with
 `agentType:"VOICE_AGENT"`, read it back from `aiAgentType` (it sticks); the `agentType` key itself is
 request-only and reads back `null`, which is *not* a failure to save. `aiAgentEnabled: true` is the
 deploy gate.
@@ -145,9 +145,15 @@ An **FAQ agent** answers only from attached knowledge — no invention, no live 
    (or `FAQ_VOICE` / `FAQ`).
 2. **A standard FAQ agent is born DISABLED with empty instructions.** Follow up with
    `PUT /aiagent/{id}` with `{... , instructions:"<strict grounding>", aiAgentEnabled:true}` to add
-   the prompt and enable it. (FAQ types are rejected by `POST /aiagent` but **accepted by `PUT`**.)
-   Strict-grounding instructions, e.g. *"Answer only from the worker's attached knowledge; if a
-   topic isn't in it, say you don't know — never guess, no outside knowledge, no live lookups."*
+   the prompt and enable it. Strict-grounding instructions, e.g. *"Answer only from the worker's
+   attached knowledge; if a topic isn't in it, say you don't know — never guess, no outside knowledge,
+   no live lookups."*
+3. **FAQ is the one exception to the POST-create rule — its prompt cannot be made UI-visible via the
+   API.** `POST /aiagent` rejects FAQ types (`400 "Only VOICE_AGENT, CHAT_AGENT & STRUCTURED_OUTPUT …"`)
+   and `CreateStandardAgentRequest` (the `/aiagent/standard` body) has **no `instructions` field** — so
+   FAQ instructions are **`PUT`-only**, which sets the runtime but leaves the UI prompt editor **blank**.
+   The agent runs correctly on its `instructions`; if you need the prompt visible/editable in the UI,
+   **edit it in the UI**. (For VOICE/CHAT/STRUCTURED_OUTPUT, always POST-create instead.)
 
 An FAQ agent is only useful once a knowledge base is **attached and indexed** — see
 `references/knowledge-and-rag.md`. `CHAT_AGENT`/`VOICE_AGENT`/`STRUCTURED_OUTPUT` agents are created
@@ -160,11 +166,13 @@ when a downstream system parses the worker's output. It is **single-agent only**
 and the worker carries `structuredOutputEnabled: true`. The config + verified flow:
 
 1. **Create the worker with `structuredOutputEnabled: true`** (`SINGLE_AGENT`). Verified live: the
-   auto-provisioned default agent is then born as **`STRUCTURED_OUTPUT`** (disabled) — you don't create
-   a second one (single-agent), you **update** that default.
-2. **Add the schema + enable** with `PUT /aiagent/{defaultAgentId}` and body `{ agentType:"STRUCTURED_OUTPUT",
+   auto-provisioned default agent is then born as **`STRUCTURED_OUTPUT`** (disabled).
+2. **Delete the default and `POST` a fresh `STRUCTURED_OUTPUT` agent** — the same delete-then-POST
+   discipline as any single-agent worker, so the prompt **renders in the UI** (verified live 2026-07-21:
+   `POST /aiagent` accepts `STRUCTURED_OUTPUT` with `instructions` + `structuredOutputConfig` → `200`; a
+   `PUT` on the default sets the runtime but leaves the editor blank). So:
+   `DELETE /aiagent/{defaultId}?version=0` → `POST /aiagent { agentType:"STRUCTURED_OUTPUT",
    instructions:"…extract into the schema, no prose…", aiAgentEnabled:true, structuredOutputConfig:{…} }`.
-   (`STRUCTURED_OUTPUT` is also accepted by `POST /aiagent` directly.)
 
 `structuredOutputConfig` = `{ maxRetries, schemaFields:[ SchemaField… ] }`. Each **`SchemaField`**:
 - `name`, `type`: `STRING | INTEGER | FLOAT | BOOLEAN | OBJECT`, `description`.
@@ -175,7 +183,8 @@ and the worker carries `structuredOutputEnabled: true`. The config + verified fl
   minValue, maxValue, multipleOf, minItems, maxItems, … }`.
 
 ```
-PUT /aiagent/{defaultAgentId}  body:
+DELETE /aiagent/{defaultAgentId}?version=<draft>          # free the single-agent slot
+POST /aiagent  body:
 { aiWorkerId:<id>, version:<draft>, name:"Order Extractor",
   description:"Extracts an order summary", agentType:"STRUCTURED_OUTPUT", aiAgentEnabled:true,
   instructions:"Extract the order details into the schema; never add prose.",
@@ -186,26 +195,31 @@ PUT /aiagent/{defaultAgentId}  body:
       enumValues:["PENDING","SHIPPED","DELIVERED"] } ] } }
 ```
 
-Verified live (worker `6a3ad4c71778706cdf8df295`): the schema round-trips intact. That the agent
+Verified live: the schema round-trips intact, and `POST /aiagent` with `STRUCTURED_OUTPUT` +
+`structuredOutputConfig` returns `200` (worker `6a5f153e…54e5`, 2026-07-21). That the agent
 actually *returns* a conforming shape is a runtime behaviour — needs a live conversation to confirm.
 See `references/control-and-reliability.md` for the worker-side `structuredOutputEnabled` + guardrails
 + fallback config.
 
 ## Recipes
 
-**Enable a single-agent worker (the common case):**
+**Enable a single-agent worker (the common case) — delete the default, then POST the real agent:**
 ```
-GET /aiagent?workerId=<id>&version=0                # finds the default "Chat Agent", disabled
-PUT /aiagent/<agentId>  { ...keep fields..., "aiAgentEnabled": true }
-# now exactly one enabled agent → POST /aiworker/<id>/deploy?version=0
+GET    /aiagent?workerId=<id>&version=0             # the default agent, disabled, empty prompt
+DELETE /aiagent/<defaultAgentId>?version=0          # free the single-agent slot (version required)
+POST   /aiagent  { aiWorkerId:<id>, version:0, name, description, agentType:"VOICE_AGENT",
+                   instructions:"<full prompt + [tool:]/[knowledge:]/[var:] tokens>", aiAgentEnabled:true }
+# prompt renders in the UI + exactly one enabled agent → POST /aiworker/<id>/deploy?version=0
 ```
+(Do **not** just `PUT aiAgentEnabled:true` on the default — that deploys an agent whose prompt is blank
+in the UI editor.)
 
 **Build a multi-agent worker:**
 ```
 # worker created/updated with agentSetupType = MULTI_AGENT (on a draft)
-PUT  /aiagent/<defaultAgentId>  { "aiAgentEnabled": true, ... }
+PUT  /aiagent/<defaultAgentId>  { ...keep fields..., "aiAgentEnabled": false }   # disable (or DELETE) the default
 POST /aiagent  { aiWorkerId:<id>, version:0, name:"Billing", description:"...",
-                 agentType:"VOICE_AGENT", instructions:"...", aiAgentEnabled:true }
-# the worker's workerLevelPrompt is the orchestrator that routes to these agents
+                 agentType:"VOICE_AGENT", instructions:"...", aiAgentEnabled:true }   # each specialist is POST-created
+# the worker's workerLevelPrompt is the orchestrator that routes to these POSTed specialists
 # → POST /aiworker/<id>/deploy?version=0
 ```

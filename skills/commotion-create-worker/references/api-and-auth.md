@@ -93,7 +93,7 @@ endpoint is occasionally flaky). Use this to evaluate prompt adherence and hallu
 | GET | `/aiagent/{id}?version=N` | retrieve one agent | — |
 | POST | `/aiagent` | create agent on a draft worker | `AiAgentRequest` |
 | POST | `/aiagent/standard` | create a *standard* agent (e.g. FAQ) | `CreateStandardAgentRequest` |
-| PUT | `/aiagent/{id}` | update agent (enable it, set instructions) | `AiAgentRequest` |
+| PUT | `/aiagent/{id}` | enable/disable; sets runtime `instructions` but **not** the UI prompt (POST-create for a visible prompt) | `AiAgentRequest` |
 | DELETE | `/aiagent/{id}?version=N` | delete an agent (`version` query param required) | — |
 
 ### Knowledge & files
@@ -133,6 +133,30 @@ The byte PUT to the returned `preSignedUrl` is **not** through Kong — `curl -X
 | GET | `/ai-worker-tool/app-actions?aiWorkerId=&version=&appIdentifier=&searchText=&pageNumber=&pageSize=` | an app's actions | — |
 | GET | `/ai-worker-tool/webhooks?appIdentifier=&searchText=&pageNumber=&pageSize=` | an app's webhooks | — |
 
+### Settings — pronunciation dictionaries & state variables (worker-scoped resources)
+| Method | Path | Purpose | Schema |
+|--------|------|---------|--------|
+| GET | `/ai-pronunciation-dict?workerId=&version=&pageNumber=&pageSize=&sortDirection=` | list pronunciation entries | — |
+| GET | `/ai-pronunciation-dict/{pronunciationDictId}?version=` | one entry (id field is `pronunciationDictId`, not `id`) | — |
+| POST / PUT | `/ai-pronunciation-dict[/{pronunciationDictId}]` | create / update an entry | `AiPronunciationDictRequest` |
+| DELETE | `/ai-pronunciation-dict` | bulk delete (array body) | `DeleteAiPronunciationDictRequest` |
+| GET | `/ai-worker-variable-schema?workerId=&version=&pageNumber=&pageSize=&sortDirection=` | list state variables | — |
+| GET | `/ai-worker-variable-schema/{variableId}` | one variable (id field is `id`) | — |
+| POST / PUT | `/ai-worker-variable-schema[/{variableId}]` | create / update a variable | `AiWorkerVariableSchemaRequest` |
+| DELETE | `/ai-worker-variable-schema` | bulk delete (array body) | `DeleteAiWorkerVariableSchemaRequest` |
+
+Both are `(worker, version)`-scoped, created on a draft; full behaviour in
+`references/settings-variables-pronunciation.md`.
+
+### Knowledge settings (indexing / embedding / chunking — the `km-setting` plane)
+| Method | Path | Purpose | Schema |
+|--------|------|---------|--------|
+| GET | `/aiworker/km-setting/metadata` | valid indexing/embedding/chunking options | — |
+| GET | `/aiworker/km-setting/{entityId}` | a worker's KM setting (returns `settingId`, `entityId`, config) | — |
+| PUT | `/aiworker/km-setting/setting/{settingId}` | update the KM setting (get `settingId` from the retrieve) | `KMSettingUpdateRequest` |
+
+Auto-provisioned per worker; see `references/knowledge-and-rag.md`.
+
 ### A2A (agent-to-agent — a separate protocol)
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -146,5 +170,6 @@ The byte PUT to the returned `preSignedUrl` is **not** through Kong — `curl -X
 `FileDeleteRequest`, `CreateCustomToolRequest`, `CreateBuiltInActionsToolRequest`,
 `CreateCodeBlockToolRequest`, `RunCodeBlockRequest`,
 `CreateMcpServerRequest`, `UpdateMcpServerRequest`, `CreateConnectorToolRequest`,
-`UpdateConnectorToolRequest`, `CreateCredentialRequest`, `CopilotChatContinueInput`.
+`UpdateConnectorToolRequest`, `CreateCredentialRequest`, `CopilotChatContinueInput`,
+`AiPronunciationDictRequest`, `AiWorkerVariableSchemaRequest`, `KMSettingUpdateRequest`.
 (Any other component name in `/v3/api-docs/public` works too.)

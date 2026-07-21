@@ -57,6 +57,23 @@ failed). It does **not** expose a `sessionId`/`callId` field — **but the scena
 call's `sessionId`** (verified: run id == the SIMULATION conversation's sessionId), which is how you
 reach the eval-metric results below.
 
+## Reading a run for settings signals (not only prompt fixes)
+
+The transcript + `evaluationReasoning` are also the primary signal for the worker's **Settings** and
+guardrails — reach for the matching feature rather than stuffing the prompt:
+
+- **Mispronunciation** rarely shows in the score — it shows in the **transcript** as an ASR mismatch: the
+  tester-bot "heard" a different word than the worker was told to say (e.g. `NPCL` transcribed as
+  "nipple"). So scan the conversation, not just `evaluationReasoning`. → add a **pronunciation dictionary**
+  entry (`commotion-create-worker/references/settings-variables-pronunciation.md`).
+- **Re-asked / forgotten data** — the worker asks again for something already given, or that should have
+  been pre-loaded. → define a **state variable** (same reference).
+- **Answered an off-limits topic, or blocked a legitimate one.** → add / loosen a **guardrail** or a
+  forbidden-word set (`commotion-create-worker/references/control-and-reliability.md`).
+
+`commotion-improve-worker` turns these into edits automatically; the full symptom→fix table is its
+`improvement-loop.md`.
+
 ## Eval-metric scores per call — the async plumbing (verified live)
 
 Metric results are separate from scenario pass/fail and are populated **asynchronously**:

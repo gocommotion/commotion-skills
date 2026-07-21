@@ -128,13 +128,31 @@ Paths are relative to the base URL. "Schema" is the `commotion_schema` name for 
 | GET / POST / PUT / DELETE | `/eval-metric-alert[/{id}]` | metric breach alerts | `EvalMetricAlertRequest` |
 | POST | `/eval-result/trigger?voiceCallId=` | force (async) metric evaluation for a call — pass the **`voiceInteractionId`** (e.g. `call_9dc8…`), NOT `voiceCallMongoId` (500s) | — |
 | GET | `/eval-result/{id}` · `/eval-result/call/{callId}` · `/eval-result/session/{sessionId}` | read eval results → `results[]` of `EvalMetricResultEntry` (`thresholdMet`, reasoning) | — |
+| GET | `/eval-result?aiWorkerId=&sessionId=&voiceInteractionId=&status=&metricName=&channelType=&pageNumber=&pageSize=&sortBy=&sortDirection=` | list/filter eval-results across a worker | — |
+| GET | `/eval-result/count?aiWorkerId=&status=&metricName=&…` | count eval-results matching a filter (dashboard totals) | — |
+
+### Eval insight groups & scheduling (grouped analysis; new)
+| Method | Path | Purpose | Schema |
+|--------|------|---------|--------|
+| GET | `/eval-insight-group?aiWorkerId=&type=&simulationId=&sourceMetricId=&pageNumber=&pageSize=&sortBy=&sortDirection=` | list grouped eval insights (failure-mode / deep-research style analysis over a set of calls) | — |
+| GET | `/eval-insight-group/{evalInsightGroupId}` | one insight group | — |
+| POST | `/eval-insight-group` | create an insight group (`name, type, aiWorkerId, version, callIds, dynamic, filter, llm, firstCallDate, lastCallDate`) | `EvalInsightGroupRequest` |
+| PUT | `/eval-insight-group/{evalInsightGroupId}` | update a group | `EvalInsightGroupRequest` |
+| POST | `/eval-insight-group/{evalInsightGroupId}/refresh` | recompute the group's insights | — |
+| DELETE | `/eval-insight-group?ids=` | bulk delete | — |
+| POST | `/schedule` | schedule a delayed webhook callback (`webhookUrl, delay, delayUnit, payload`) — generic scheduler, e.g. deferred eval/run triggers | `ScheduleConfigInput` |
+
+These are **secondary/analysis** surfaces — the loop's gate is still the scenario `passRate` (below).
+Insight groups summarise *why* a batch of calls failed a metric; `/schedule` fires a webhook after a
+delay. Neither is needed for a basic run-and-score. Ground shapes with `commotion_schema`
+(`EvalInsightGroupRequest`, `ScheduleConfigInput`) before writing.
 
 ## Schema names for `commotion_schema`
 
 `ScenarioRequest`, `GenerateScenarioRequest`, `ConversationScenarioGenerateRequest`,
 `BulkScenarioCreateRequest`, `PersonalityRequest`, `PersonalityPromptGenerateRequest`,
 `RunScenariosRequest`, `SimulationUpdateRequest`, `EvalMetricRequest`, `EvalMetricAlertRequest`,
-`LLMConfig`. Response shapes (not fetched, but real): `ScenarioGenerationResponse`,
+`EvalInsightGroupRequest`, `ScheduleConfigInput`, `LLMConfig`. Response shapes (not fetched, but real): `ScenarioGenerationResponse`,
 `SimulationResponse`, `ScenarioRunResponse`, `EvalResultResponse`, `EvalMetricResultEntry`,
 `ScenarioResponse`, `EvalMetricResponse`, `ScenarioDropdownConfigResponse`. (Any other component name
 in `/v3/api-docs/public` works too.)
