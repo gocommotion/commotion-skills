@@ -93,7 +93,7 @@ endpoint is occasionally flaky). Use this to evaluate prompt adherence and hallu
 | GET | `/aiagent/{id}?version=N` | retrieve one agent | — |
 | POST | `/aiagent` | create agent on a draft worker | `AiAgentRequest` |
 | POST | `/aiagent/standard` | create a *standard* agent (e.g. FAQ) | `CreateStandardAgentRequest` |
-| PUT | `/aiagent/{id}` | update agent (enable it, set instructions) | `AiAgentRequest` |
+| PUT | `/aiagent/{id}` | enable/disable; sets runtime `instructions` but **not** the UI prompt (POST-create for a visible prompt) | `AiAgentRequest` |
 | DELETE | `/aiagent/{id}?version=N` | delete an agent (`version` query param required) | — |
 
 ### Knowledge & files

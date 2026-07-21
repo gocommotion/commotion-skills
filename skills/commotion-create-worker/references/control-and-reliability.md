@@ -3,7 +3,8 @@
 The worker-definition dials that make a worker customer-ready: **guardrails** (safety filters),
 **fallback models** (resilience), and **structured output** (strict parseable shape). All are fields
 on the `AiWorkerRequest` / `AiAgentRequest` — **no new tools**; you set them with `POST /aiworker` /
-`PUT /aiworker/{id}` (and, for the structured agent, `PUT /aiagent/{id}`). Ground the valid values in
+`PUT /aiworker/{id}` (and, for the structured agent, delete the default + `POST /aiagent` so the prompt
+renders in the UI — see `agents-and-orchestration.md`). Ground the valid values in
 `GET /aiworker/metadata` (`guardrailConfig`, `llmConfig`) and `GET /aimodel`. (Structured output's
 agent side lives in `agents-and-orchestration.md`; this file is the worker-config side.)
 
@@ -156,7 +157,9 @@ One `SINGLE_AGENT` worker created with all three dials → all round-tripped on
   `["acmerival","secretproject"]` — all four `…Response` blocks present.
 - Fallback: primary `commotion-medium`, fallback `gpt-4o-india`/`azure_openai`, `numberOfRetries:1`.
 - Structured output: `structuredOutputEnabled:true` → default agent auto-born `STRUCTURED_OUTPUT`
-  (disabled); `PUT /aiagent/{id}` added the `schemaFields` schema + enabled it; schema round-tripped.
+  (disabled); delete the default + `POST /aiagent` a fresh `STRUCTURED_OUTPUT` agent with the
+  `schemaFields` schema (verified live: `POST /aiagent` accepts `STRUCTURED_OUTPUT` → 200, so the prompt
+  renders in the UI; a `PUT` on the default sets the runtime only). Schema round-trips intact.
 
 Also on the **voice** multi-agent worker `6a379970421f279076ad4668` (draft v2): guardrails (toxicity
 in+out with custom thresholds, PII Commotion-mask, forbidden words) applied and round-tripped while the

@@ -149,8 +149,9 @@ Agents/config are editable only on a **draft**. Establish the draft version you'
 Then apply the diagnosed fixes on that draft version.
 
 Apply the diagnosed fixes using the **create-worker machinery** (don't reinvent it):
-- **Prompt** → `PUT /aiagent/{id}` to revise `instructions` (or re-POST the agent — see the
-  POST-create rule in agents-and-orchestration.md so the prompt renders/edits in the UI).
+- **Prompt** → **re-POST the agent** (delete + `POST /aiagent`) with the revised `instructions` so the
+  prompt renders/edits in the UI — the POST-create rule in agents-and-orchestration.md. A bare
+  `PUT /aiagent/{id}` updates the runtime only and leaves the UI editor blank; don't use it for the prompt.
 - **Tools** → create on the draft (`POST /ai-worker-tool/...`) and reference by action name in the
   prompt — see tools-and-capabilities.md.
 - **Knowledge** → attach + index, bind in the prompt — see knowledge-and-rag.md.

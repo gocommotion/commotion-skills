@@ -117,15 +117,19 @@ don't know - never guess, no outside knowledge.
 [knowledge:General Knowledge Book|id:6a3a20eeb70d8b3ef551f387]
 ```
 
-Set it with `PUT /aiagent/{id}` and body `{..., instructions: "<prose>\n\n[knowledge:<name>|id:<id>]"}`.
+Compose it into the agent's `instructions` — `{..., instructions: "<prose>\n\n[knowledge:<name>|id:<id>]"}`
+— and set it the **Phase-6 way** (POST-create / re-POST so it renders in the UI; a bare `PUT` writes the
+runtime only — see the note just below on runtime-vs-editor).
 The `<knowledgeId>` is the id returned by the bulk create / list; `<name>` matches the item's `name`.
 The token is byte-identical to what the UI's `/Knowledge` command stores in `instructions`, and
 round-trips intact via the API.
 
-**Note (verified live):** an API-injected token renders in the editor as **plain text** rather than
-a styled Knowledge chip — but that is **cosmetic only**. Grounding works at runtime: a Test-Agent
-run answered correctly from the document with the token written purely via `PUT /aiagent/{id}`. So you
-do **not** need the UI `/Knowledge` command — writing the token into `instructions` is sufficient.
+**Note (verified live):** bind the token by composing it into the **POST-created** agent's
+`instructions` (the required POST-create rule — see `agents-and-orchestration.md`). It renders in the
+editor as **plain text** rather than a styled Knowledge chip — cosmetic only; grounding works at runtime
+(a Test-Agent run answered correctly from the document). But a `PUT` on the auto-provisioned default
+agent sets the runtime `instructions` while the editor stays **blank** (verified 2026-07-21) — so don't
+rely on `PUT` to place the prompt; POST-create (or re-POST) the prompt-bearing agent so it's visible in the UI.
 
 ## Knowledge settings — indexing / embedding / chunking (`km-setting`, verified live)
 

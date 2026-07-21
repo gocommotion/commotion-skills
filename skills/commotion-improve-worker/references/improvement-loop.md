@@ -68,7 +68,10 @@ Scenarios and eval-metrics are `(aiWorkerId, version)`-scoped, and **list endpoi
 ## Failure → fix taxonomy (the full version)
 
 Read each failing run's `failureReason` + `evaluationReasoning` (`GET /scenario-run?simulationId=`),
-classify, and map to a fix. Reuse the create-worker references for the *how*.
+classify, and map to a fix. Reuse the create-worker references for the *how*. Some signals live in the
+**transcript**, not the reasoning — a **mispronunciation** surfaces as the tester-bot's ASR mis-hearing a
+term (the transcript wrote a different word than the worker said), so scan the conversation too, not only
+`evaluationReasoning`.
 
 | Symptom in `evaluationReasoning` | Root cause | Fix | Reference |
 |---|---|---|---|

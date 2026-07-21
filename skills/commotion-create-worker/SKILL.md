@@ -68,8 +68,11 @@ the single "how to call it" reference. Field *shapes* always come from `commotio
 reference files are the *behavior* the schema doesn't tell you.
 
 **Execution rules:** one phase at a time, in order; read the reference named by a phase before you
-act on it; show every write before you make it. Optional phases (7, 8, 8.5) only run when the goal
-needs them.
+act on it; show every write before you make it. Phases 7, 8, 8.5 are **use-case-driven** — run each
+when the goal calls for it (grounding; tools; remembered state / pronunciation), not by default and not
+never. Judging what the worker actually needs — from the goal and the platform's use-case patterns — is
+the point of the skill: add the feature that keeps the prompt clean, skip the one that would just be
+noise.
 
 ## Phase 0 — Ground yourself in the real schema (always, before drafting)
 
@@ -254,15 +257,17 @@ there first: `GET /aiagent?workerId=<worker-id>&version=0`.
 
 Either way: **put the full prompt in the POSTed agent's `instructions`; keep `workerLevelPrompt`
 concise.** To later revise a POSTed agent's prompt, edit it in the UI (syncs the editor) or re-`POST`
-a fresh agent (delete/disable the old) — a plain `PUT` updates the runtime but may not refresh the editor.
+a fresh agent (delete/disable the old) — a plain `PUT` updates the runtime only and does **not** refresh
+the editor, so don't use it for the prompt.
 
 **Structured-output agent (strict parseable shape).** If you set `structuredOutputEnabled: true`
-(Phase 3), the default agent is auto-born as **`STRUCTURED_OUTPUT`** (disabled) — verified live.
-**Update** it (don't add a second — single-agent): `PUT /aiagent/{agentId}` with `{agentType:
-"STRUCTURED_OUTPUT", instructions:"…extract into the schema, no prose…", aiAgentEnabled:true,
-structuredOutputConfig:{maxRetries, schemaFields:[…]}}`. The `schemaFields` shape (types, enums,
-nested objects, validation) is in `references/control-and-reliability.md` /
-`references/agents-and-orchestration.md`.
+(Phase 3), the default agent is auto-born as **`STRUCTURED_OUTPUT`** (disabled) — verified live. Follow
+the **same delete-then-POST rule as any single-agent worker** so the prompt renders in the UI: delete
+the default, then `POST /aiagent` a fresh `STRUCTURED_OUTPUT` agent with `{instructions:"…extract into
+the schema, no prose…", aiAgentEnabled:true, structuredOutputConfig:{maxRetries, schemaFields:[…]}}`
+(verified live 2026-07-21: `POST /aiagent` accepts `STRUCTURED_OUTPUT` → 200; a `PUT` on the default
+sets the runtime but leaves the editor blank). The `schemaFields` shape (types, enums, nested objects,
+validation) is in `references/control-and-reliability.md` / `references/agents-and-orchestration.md`.
 
 **FAQ agent (answers strictly from docs).** When the goal is "answer questions from this material —
 don't make things up," provision an **FAQ agent** (`agentType` `FAQ_CHAT`/`FAQ_VOICE`/`FAQ`). Two
@@ -270,7 +275,10 @@ gotchas (verified live): FAQ types **must** be created with `POST /aiagent/stand
 (`POST /aiagent` rejects them — only VOICE_AGENT/CHAT_AGENT/STRUCTURED_OUTPUT), and the standard
 agent is born **disabled with empty instructions** — follow up with `PUT /aiagent/{id}` to add
 strict-grounding `instructions` (*answer only from the attached knowledge; if it isn't there, say
-you don't know — never invent, no outside lookups*) and set `aiAgentEnabled: true`. An FAQ agent is
+you don't know — never invent, no outside lookups*) and set `aiAgentEnabled: true`. **FAQ is the one
+exception to the POST-create rule:** `POST /aiagent` rejects FAQ types and `POST /aiagent/standard` has
+no `instructions` field, so FAQ instructions are **`PUT`-only** and the prompt **won't render in the UI
+editor** (it runs fine at runtime) — edit it in the UI if visibility is needed. An FAQ agent is
 only useful once a knowledge base is attached and indexed (Phase 7). See
 `references/agents-and-orchestration.md` for the full pattern.
 
@@ -301,9 +309,11 @@ is ready before deploying**. Show the user what you're attaching before each wri
 
 **Then bind the KB to each grounded agent (required).** Worker-level attach alone does *not* make an
 agent use it — the agent's prompt must reference the KB. Over the API this is a mention token in the
-agent's `instructions`: `PUT /aiagent/{agentId}` with `{..., instructions: "<prose telling it to
-search the knowledge base>\n\n[knowledge:<knowledge name>|id:<knowledgeId>]"}`. There is no separate
-agent↔knowledge field. See `references/knowledge-and-rag.md` ("Binding knowledge to an agent").
+agent's `instructions`: `{..., instructions: "<prose telling it to search the knowledge base>\n\n
+[knowledge:<knowledge name>|id:<knowledgeId>]"}` — compose the token into the prompt and set it the
+**Phase-6 way** (POST-create / re-POST so it renders in the UI; a bare `PUT` writes the runtime only).
+There is no separate agent↔knowledge field. See `references/knowledge-and-rag.md` ("Binding knowledge
+to an agent").
 
 ## Phase 8 — Attach tools (think hard about what should be a tool)
 
@@ -342,8 +352,10 @@ The full per-kind recipes, body shapes, HITL, and the projection model are in
   (name only, no id; the action name comes from `GET /ai-worker-tool?aiWorkerId=…&version=…`'s
   `actionMetaDataOutputList[].actionName`, e.g. `lookup-order-189`). Same family as
   `[knowledge:<name>|id:<id>]`, `[agent:<name>|id:<id>]` (hand off to another agent), and `[var:…]`.
-  So: create on the worker, then `PUT /aiagent/{id}` with `[tool:…]` in `instructions` — that's how
-  you scope a tool to a specific agent. See `references/tools-and-capabilities.md` ("Binding a tool to an agent").
+  So: create on the worker, then add `[tool:…]` to the agent's `instructions` and set it the **Phase-6
+  way** (POST-create / re-POST so it renders in the UI; a bare `PUT` writes the runtime only) — that's
+  how you scope a tool to a specific agent. See `references/tools-and-capabilities.md` ("Binding a tool
+  to an agent").
 - **Built-ins:** the catalog defaults (`end_call`, `switch_language`) are **already configured** on
   every worker — re-adding one is a 400. Add only non-defaults (e.g. `transfer_to_human`). Built-in
   actions have **no** `hitlMode`.
@@ -369,31 +381,42 @@ The full per-kind recipes, body shapes, HITL, and the projection model are in
 - **Show every write before you make it** (especially each HITL gate); confirm with
   `GET /ai-worker-tool?aiWorkerId=<worker-id>&version=0`.
 
-## Phase 8.5 — Settings (pronunciation dictionaries + state variables — when the use case needs them)
+## Phase 8.5 — Settings (state variables + pronunciation — driven by the use case, not bolted on)
 
-Optional, like Phases 7–8. Two worker **Settings** subsystems, each its own worker-scoped resource
-created on the **draft** (body carries the worker id + `version`), shown before each write. Full detail,
-field shapes, and the verified-live gotchas are in `references/settings-variables-pronunciation.md`.
+Two worker **Settings** subsystems, each its own worker-scoped resource created on the **draft** (body
+carries the worker id + `version`), shown before each write. **These are not blanket-optional add-ons —
+decide each from the goal** (the way you design guardrails from the use case in Phase 3): reach for the
+one the use case calls for so the *prompt stays clean* instead of carrying that work itself. Full field
+shapes and the verified-live gotchas are in `references/settings-variables-pronunciation.md`.
 
-- **Pronunciation dictionary** (`/ai-pronunciation-dict`) — when the worker speaks brand names,
-  acronyms, SKUs, or non-English terms the TTS mangles, add an entry per term:
-  `POST /ai-pronunciation-dict {aiWorkerId, version, inputText, pronunciation, pronunciationType}`
-  (`pronunciationType` ∈ `ALIAS`|`IPA`|`CMU`|`SYMBOL`|`PHONEME` — prefer `ALIAS`, e.g. `NPCL` →
-  `"N-P-C-L"`). The created id comes back as **`pronunciationDictId`** (not `id`); `inputText` is unique
-  per worker+version. List with `GET /ai-pronunciation-dict?workerId=<id>&version=<v>`.
-- **State variables** (`/ai-worker-variable-schema`) — when the worker must remember data across the
-  call (so it doesn't re-ask) or pre-load caller data from a tool. `POST /ai-worker-variable-schema
-  {workerId, version, title, variableType, variableSource, availability, …}`. **`EXTRACTED`** = the LLM
-  pulls it from the conversation (nothing else needed); **`LOADED`** = fetched from a tool and
-  **requires `loadingStrategy` (`PRE_LOADING`/`DYNAMIC_LOADING`) + `toolReference`** (400 otherwise). The
-  id comes back as **`id`**. **Creating a variable does not bind it** — the consuming agent must
-  reference it in `instructions` as `[var:<title>]` (`PUT /aiagent/{id}`, Phase 6 pattern). A `LOADED`
-  variable's `toolReference` points at a tool from Phase 8, so create that tool first.
+- **State variables** (`/ai-worker-variable-schema`) — **add these whenever the goal needs the worker to
+  remember caller-provided values (so it doesn't re-ask) or to pre-load profile/CRM/account data.** This
+  is frequently *necessary*, not optional: a variable keeps "remember X / fetch X once" out of the prompt
+  (which would otherwise bloat and misbehave). `POST /ai-worker-variable-schema {workerId, version,
+  title, variableType, variableSource, availability, …}`. **`EXTRACTED`** = the LLM pulls it from the
+  conversation (nothing else needed); **`LOADED`** = fetched from a tool and **requires `loadingStrategy`
+  (`PRE_LOADING`/`DYNAMIC_LOADING`) + `toolReference`** (400 otherwise). The id comes back as **`id`**.
+  **Creating a variable does not bind it** — the consuming agent must reference it in `instructions` as
+  `[var:<title>]`, composed into the prompt and (re-)`POST`ed per the Phase-6 POST-create rule (a bare
+  `PUT` writes the runtime only and leaves the UI editor stale). A `LOADED` variable's `toolReference`
+  points at a tool from Phase 8 (create that tool first); a code-block tool can also read a variable via
+  its `stateVariables[]`.
+- **Pronunciation dictionary** (`/ai-pronunciation-dict`) — **optional, and usually *discovered from a
+  simulation run* rather than pre-guessed.** Add an entry when the worker speaks a brand name, acronym,
+  SKU, or non-English term the TTS mangles — most reliably spotted when a sim transcript shows the
+  tester-bot mis-hearing the term (see `commotion-run-evals` / `commotion-improve-worker`); don't try to
+  enumerate them all up front. `POST /ai-pronunciation-dict {aiWorkerId, version, inputText,
+  pronunciation, pronunciationType}` (`pronunciationType` ∈ `ALIAS`|`IPA`|`CMU`|`SYMBOL`|`PHONEME` —
+  prefer `ALIAS`, e.g. `NPCL` → `"N-P-C-L"`). The id comes back as **`pronunciationDictId`** (not `id`);
+  `inputText` is unique per worker+version. List with `GET /ai-pronunciation-dict?workerId=<id>&version=<v>`.
 
 Both resources are edited by id (`PUT /ai-pronunciation-dict/{pronunciationDictId}` /
-`PUT /ai-worker-variable-schema/{variableId}`) and bulk-deleted (array body). This is a common cause
-of "the agent re-asks for info it already has" and "the bot mispronounces our brand" — reach for state
-variables and pronunciation entries respectively (also see `commotion-improve-worker`).
+`PUT /ai-worker-variable-schema/{variableId}`) and bulk-deleted (array body). The same
+use-case-then-simulation-signal discipline applies to **guardrails / forbidden words** (Phase 3 /
+`control-and-reliability.md`): design them from the domain, then tune from what sim runs reveal (an
+off-limits answer → add a guardrail; a blocked legitimate request → loosen one). "Agent re-asks info it
+already has" → state variable; "bot mispronounces our brand" → pronunciation entry — see
+`commotion-improve-worker`.
 
 ## Phase 9 — Deploy readiness gate
 

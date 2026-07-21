@@ -1,5 +1,44 @@
 # Changelog
 
+## 2026-07-21 — 1.2.1 — Refinements: use-case-driven settings, code-block state vars, prompt-write correctness
+
+A review pass on the 1.2.0 Settings work. No new endpoints — sharper judgment about *when* to reach for
+each feature (so the agent prompt stays clean), a code-block ↔ state-variable link that couldn't be wired
+before the variable API existed, a prompt-update mechanics correction, and verified-live updates.
+
+- **Feature selection is use-case-driven, not blanket-optional** (`commotion-create-worker/SKILL.md`).
+  Phase 8.5 reframed: **state variables** are frequently *necessary* (remember caller data / don't
+  re-ask / pre-load profile) — defining one keeps that out of the prompt instead of bloating it;
+  **pronunciation dictionaries** stay optional and are usually *discovered from a simulation run* rather
+  than pre-guessed. The execution-rules note now frames Phases 7/8/8.5 as "run when the goal calls for
+  it," and ties guardrails/forbidden-words to the same design-then-tune-from-sims discipline.
+- **Simulation runs as a diagnostic signal.** `commotion-run-evals/references/simulation-and-results.md`
+  gains a "reading a run for settings signals" section — a mispronunciation shows in the **transcript**
+  as a tester-bot ASR mismatch (not in the score); re-asked/forgotten data → a state variable; an
+  off-limits or over-blocked answer → a guardrail tune. `improvement-loop.md` notes the transcript cue
+  for mispronunciation alongside `evaluationReasoning`.
+- **Code-block tools ↔ state variables** (`tools-and-capabilities.md`). Documented that a code-block's
+  `stateVariables[].id` is the variable's **`id`** from `POST /ai-worker-variable-schema` (create it in
+  Phase 8.5 first), that the UI equivalent is the **`@variable`** insert, and that one variable is
+  consumable two ways — the prompt token `[var:<title>]` and a code-block `stateVariables[]` entry.
+- **Prompt-write correctness (POST vs PUT).** Every *newer* spot that bound a `[var:]`/`[tool:]`/
+  `[knowledge:]` token via a bare `PUT /aiagent/{id}` now points at the canonical Phase-6 rule: compose
+  the token into `instructions` and **(re-)`POST`** so the prompt renders in the UI — a bare `PUT` writes
+  the runtime only and leaves the editor stale. **Verified live 2026-07-21:** a `PUT` on the
+  auto-provisioned default left the UI prompt editor **blank**; a fresh `POST` **rendered** the prompt
+  (with `[var:]`/`[tool:]` tokens shown as plain text, not chips). Corrected two agent types too:
+  **structured-output** now uses the same **delete-default + `POST`** flow (verified `POST /aiagent`
+  accepts `STRUCTURED_OUTPUT` → 200) so its prompt renders; **FAQ** is the sole exception — `POST /aiagent`
+  rejects FAQ types and `/aiagent/standard` has no `instructions` field, so FAQ instructions are
+  `PUT`-only and never render in the UI editor (edit in the UI for visibility). The single-agent
+  "common case" recipe was also switched from PUT-enabling the default to delete-default + POST.
+- **Verified-live updates** (`settings-variables-pronunciation.md`): the TTS **applies** a pronunciation
+  entry and an **`EXTRACTED`** variable **is populated** from a real call — both verified;
+  `LOADED`-fetch stays not-yet-verified. Live A/B on dev3 also confirmed: **code-block ↔ state variable**
+  (`stateVariables:[{id}]` binding + `/code-block/run` substitution, where the placeholder injects a
+  **pre-quoted literal** — `x = {{[statevar:title]}}`, not `"…"`), and that state variables /
+  pronunciation entries render under **Settings** in the UI.
+
 ## 2026-07-20 — 1.2.0 — Settings: pronunciation dictionaries + state variables (and eval-domain reconcile)
 
 The backend shipped worker **Settings** APIs the skills didn't cover. Added them to

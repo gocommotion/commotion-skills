@@ -31,8 +31,13 @@ different Settings surface and live in `knowledge-and-rag.md`.)
 5. **Creating a variable does NOT bind it — the agent must name it in its prompt.** Agents read a
    state variable via the mention token **`[var:<title>]`** in `instructions` (same family as
    `[tool:…]` / `[knowledge:…]`). Defining the schema entry just makes the variable *available*; the
-   agent only uses it if its prompt references it. (Set with `PUT /aiagent/{id}` — see
-   `agents-and-orchestration.md`.)
+   agent only uses it if its prompt references it. **Bind it the Phase-6 way:** compose the `[var:…]`
+   token into the agent's `instructions` and **(re-)`POST /aiagent`** so the prompt renders/edits in the
+   UI — a plain `PUT` writes the runtime `instructions` but leaves the UI editor **blank** (verified live
+   2026-07-21: a PUT on the auto-provisioned default rendered nothing in the editor; a fresh POST rendered
+   the prompt — see the POST-create rule in `agents-and-orchestration.md`). A **code-block tool** can also
+   consume a state variable directly via its `stateVariables[]` (by the variable's `id`), not only the
+   prompt token — see `tools-and-capabilities.md`.
 
 ## Pronunciation dictionaries — `/ai-pronunciation-dict`
 
@@ -62,7 +67,11 @@ and `pronunciationType`:
     control.
 
 Use it when the worker says domain jargon the TTS mangles: company/brand names, product SKUs,
-acronyms, non-English proper nouns. Prefer `ALIAS` unless you need phoneme-level precision.
+acronyms, non-English proper nouns. Prefer `ALIAS` unless you need phoneme-level precision. You usually
+**can't enumerate these up front — a simulation run surfaces them**: when the tester-bot's transcript
+mis-hears a term (the ASR wrote a different word than the worker was told to say), add an entry for that
+term. That signal-driven discovery is the primary trigger — see `commotion-run-evals`
+(simulation-and-results.md) and `commotion-improve-worker`.
 
 ## State variables — `/ai-worker-variable-schema`
 
@@ -130,7 +139,8 @@ POST /ai-worker-variable-schema  { workerId:<id>, version:0, title:"customer_int
    description:"Primary reason for the call", variableCategory:"STATE",
    variableType:"TEXT", variableSource:"EXTRACTED", availability:"AUTO" }
    -> read body.id
-# then in the agent: PUT /aiagent/{agentId} instructions "... [var:customer_intent] ..."
+# then bind it: compose "... [var:customer_intent] ..." into the agent's instructions and
+#   (re-)POST /aiagent so it renders in the UI (a bare PUT updates the runtime only — Phase-6 rule)
 ```
 
 **Loaded, pre-loaded state variable (fetched from a tool at call start):**
@@ -156,7 +166,26 @@ On a fresh voice `SINGLE_AGENT` draft:
   no `loadingStrategy` → `400 "... Loading strategy is required when variable source is LOADED"`.
 - Both entries carried `createdByUserId:"system"` (created via the gateway key, not a user token —
   over the MCP the signed-in user is attributed instead).
-- Not yet verified (need a live conversation, not config round-trip): that the TTS actually applies a
-  pronunciation entry at runtime, that an EXTRACTED variable is populated from a real call, and that a
-  LOADED variable fetches from its tool. And: `DELETE /aiworker/{id}` on a **never-deployed draft**
-  returns `400 "Worker not found!"` (draft workers linger; delete isn't the cleanup path for them).
+- **Verified at runtime (live call/sim, not just a config round-trip):** the TTS **applies** a
+  pronunciation entry — the term is spoken the way the entry specifies — and an **`EXTRACTED`** variable
+  **is populated** from what the caller says during a real call.
+- Not yet verified: that a **`LOADED`** variable fetches from its tool at runtime. And:
+  `DELETE /aiworker/{id}` on a **never-deployed draft** returns `400 "Worker not found!"` (draft workers
+  linger; delete isn't the cleanup path for them).
+
+## Verified live (dev3, 2026-07-21 — workers `6a5f1014…fafa` + `6a5f1100…549f`, draft v0)
+
+- **UI visibility — PUT vs POST (confirmed).** A `PUT /aiagent/{id}` on the **auto-provisioned default**
+  agent set the runtime `instructions` but the UI prompt editor stayed **blank**. Deleting the default
+  and **`POST /aiagent`** with the same prompt **rendered it** in the editor — the `[var:…]` / `[tool:…]`
+  tokens show as **plain text** (not styled chips), but they're present and work. So the prompt-bearing
+  agent must be POST-created / re-POSTed; a bare `PUT` is runtime-only.
+- **Settings + tools render in the UI:** `customer_intent` shows under **Settings → State Variables**
+  (Source *Extracted*, Availability *Auto*); `NPCL` under **Settings → Pronunciation Dictionaries**
+  (Alias → `N-P-C-L`); the `intent_upper` code block under **Tools**.
+- **Code-block ↔ state variable (confirmed).** `POST /ai-worker-tool/code-block` with
+  `stateVariables:[{id}]` bound the variable (echoed back with `placeholder:null` for the extracted var).
+  `POST /ai-worker-tool/code-block/run` with `{{[statevar:customer_intent]}}` +
+  `stateVariableValues:[{id, value:"refund request"}]` printed the value — the placeholder is injected as
+  a **pre-quoted literal**, so write `x = {{[statevar:title]}}` (the sandbox produces `x = "refund
+  request"`), **not** `x = "{{[statevar:title]}}"` (double-quotes → `SyntaxError`).
