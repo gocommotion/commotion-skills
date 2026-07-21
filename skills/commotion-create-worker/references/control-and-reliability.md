@@ -27,12 +27,36 @@ agent side lives in `agents-and-orchestration.md`; this file is the worker-confi
 **Design guardrails from the use case — not a fixed template.** Look at what the domain handles and
 protect exactly that: a banking/insurance/health bot → PII masking + regex masking for card/account/
 Aadhaar/policy numbers; a brand bot → forbidden words for competitors and confidential terms; any
-customer-facing bot → toxicity in+out, plus custom checks for domain rules ("no financial/medical
+customer-facing bot → toxicity, plus custom checks for domain rules ("no financial/medical
 advice"). Pick the subset the use case warrants and justify each. Four independent blocks (set any
-subset):
+subset).
+
+### Inbound vs outbound — decide direction deliberately (verified: they are separate configs)
+
+Every filter that has a direction (`toxicity`, `customGuardrail`) splits into an **inbound** config
+(applied to the **caller's** message, before the model sees it) and an **outbound** config (applied to
+the **model's own output**, before it's spoken/sent). They are independent — enabling one does **not**
+enable the other. Choose per the risk, don't set both by reflex:
+
+- **Inbound is the one you almost always want.** It catches abusive / toxic / jailbreak / prompt-
+  injection input and masks PII the caller volunteers. This is the primary line of defence for a
+  customer-facing bot.
+- **Outbound is usually redundant for toxicity** — the model has provider-side safety training and
+  won't emit toxic content unprompted, so an outbound *toxicity* filter mostly adds latency for no
+  catch. Enable outbound only when the **model's text itself** is the risk: masking PII it might read
+  back, blocking competitor/confidential/off-limits terms in what it *says*, or a "never say / never
+  advise X" rule. If you can't name why the output is risky, leave outbound off.
+- **Put custom checks on the side that matters.** A "don't *accept* X" rule → `inboundCustomGuardrailConfigs`;
+  a "never *say* X" rule → `outboundCustomGuardrailConfigs`. **PII masking is the exception that
+  legitimately runs both directions** (mask what the caller says *and* what the model echoes back).
+
+Common failure (the anti-pattern this note exists to prevent): configuring mostly **outbound**
+guardrails on a transactional worker (e.g. flight booking) — that leaves abusive/injection *input*
+unfiltered while spending latency policing output the model was never going to produce. Flip it:
+inbound toxicity + inbound custom checks, outbound only where the output is the actual risk.
 
 **Toxicity** — `toxicityDetectionConfigRequest` with `inboundMessagesConfiguration` and
-`outboundMessagesConfiguration`, each:
+`outboundMessagesConfiguration` (set the direction(s) you actually need — see above), each:
 `{ enabled, toxicityDetectionMethod:"LLM_BASED_DETECTION", toxicityThresholds:{<category>:0.0–1.0},
    actionOnToxicityDetection:"REPLACE_WITH_FALLBACK_MESSAGE", fallbackMessage }`.
 Categories (from `metadata.guardrailConfig.toxicityDetections`, default 0.5, step 0.1):
@@ -132,7 +156,8 @@ i.e. the voice side falls back to the worker's Voice-Settings LLM, the chat side
 GET /aiworker/metadata          # guardrailConfig (categories/ranges, PII behaviours) + llmConfig (retry range)
 PUT /aiworker/<id>  { ...keep name/voice/setup..., version:<draft>,
   guardrailConfigRequest:{
-    toxicityDetectionConfigRequest:{ inboundMessagesConfiguration:TOX, outboundMessagesConfiguration:TOX },
+    # inbound-only by default; add outboundMessagesConfiguration:TOX ONLY if the model's own output is a risk
+    toxicityDetectionConfigRequest:{ inboundMessagesConfiguration:TOX },
     piiMaskingConfigRequest:{ regexPatternEnabled:false, piiByCommotionEnabled:true,
       piiMaskingRegexPatternConfigList:[], piiByCommotionConfigList:[{actionToBeTaken:"MASK"}] },
     forbiddenWordsConfigRequestList:[{ standardFallbackResponseEnabled:true,

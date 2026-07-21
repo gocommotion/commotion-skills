@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-07-22 — 1.2.1 — close production-worker gaps: state vars, quality-loop handoff, guardrail direction
+
+Three gaps surfaced from a real production build (a flight-booking worker) where the model built the
+worker/agents/tools/prompt correctly but (a) never added **state variables**, (b) stopped at build
+without running the **sim → eval → improve** loop, and (c) configured mostly **outbound** guardrails
+when **inbound** is what a transactional worker needs. All three were traced to skill wording that let
+those steps be skipped; no new endpoints.
+
+- **State variables are decided during the interview, not forgotten at the end**
+  (`commotion-create-worker/SKILL.md`). Phase 1's capability checklist now explicitly asks whether the
+  worker must remember caller-provided values (so it doesn't re-ask) or pre-load profile/account/booking
+  data — with booking/renewal/lookup flagged as almost-always-yes. Phase 8.5 gained a "state it out
+  loud before moving on" forcing line, and the execution-rules note now separates 8.5's two halves:
+  **state variables are frequently *necessary***, while **pronunciation** stays the discovered-later one.
+- **A build no longer dead-ends before it's proven.** `commotion-quality-loop`'s description now names
+  *production / production-ready worker / long detailed problem statement* as its default entry point,
+  so a production statement routes to build+test+improve instead of build-only. `commotion-create-worker`
+  gained the **`Skill`** tool and its Phase 12 is rewritten from a soft "note" into a proactive
+  `AskUserQuestion` that offers to hand the built worker to `commotion-quality-loop` (which handles the
+  deployed-voice prerequisite) — for a production use case, testing is mandatory, not a footnote.
+- **Inbound vs outbound guardrails are now taught, with the correct default**
+  (`commotion-create-worker/SKILL.md` Phase 3 + `references/control-and-reliability.md`). `inbound`
+  filters the caller's message; `outbound` filters the model's own output. The model already has
+  provider-side safety training, so **default to inbound-only for toxicity** and enable outbound only
+  when the model's *own text* is the risk (PII echo-back, competitor/confidential terms it might say, a
+  "never say/advise X" rule). Custom checks are directed to the right side ("don't accept X" → inbound;
+  "never say X" → outbound); PII masking inherently covers both. The reference calls out the exact
+  anti-pattern (outbound-heavy config on a transactional worker) and the recipe now shows inbound-only
+  by default.
+
 ## 2026-07-21 — 1.2.0 (refinements) — use-case-driven settings, code-block state vars, prompt-write correctness
 
 A review pass on the 1.2.0 Settings work. No new endpoints — sharper judgment about *when* to reach for
