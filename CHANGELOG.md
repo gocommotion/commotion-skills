@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-07-21 — 1.2.1 — Refinements: use-case-driven settings, code-block state vars, prompt-write correctness
+## 2026-07-21 — 1.2.0 (refinements) — use-case-driven settings, code-block state vars, prompt-write correctness
 
 A review pass on the 1.2.0 Settings work. No new endpoints — sharper judgment about *when* to reach for
 each feature (so the agent prompt stays clean), a code-block ↔ state-variable link that couldn't be wired
