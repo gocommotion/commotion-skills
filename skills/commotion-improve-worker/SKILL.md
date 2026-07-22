@@ -123,7 +123,7 @@ Classify each failure and map it to a fix (the **failure → fix taxonomy** — 
 | "Called an API" but nothing happened / looped | **Register the API as a tool**, reference `[tool:<action>]` | tools-and-capabilities.md |
 | Couldn't answer from source material | **Attach + index knowledge**, bind it in the prompt | knowledge-and-rag.md |
 | Flipped language on English-spoken digits | Add the **don't-switch-on-digits** prompt rule | aiworker-lifecycle.md |
-| Over-blocked a legitimate request / under-blocked a bad one | Tune **guardrails** (thresholds, forbidden words, custom checks) | control-and-reliability.md |
+| Over-blocked a legitimate request / under-blocked a bad one | Tune **guardrails** (toxicity category toggles, forbidden-word groups, custom checks, advanced safety) | control-and-reliability.md |
 | Re-asked for info already given / looped | Add the **anti-repetition / call-once** prompt rules | agents-and-orchestration.md |
 
 Prioritize the fixes that clear the most failing scenarios. Present the diagnosis to the user.

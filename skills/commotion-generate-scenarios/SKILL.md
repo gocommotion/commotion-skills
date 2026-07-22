@@ -153,7 +153,9 @@ Show the planned personas in plain language and **approve before each `POST`**. 
 
 A **scenario** is one simulated conversation with a **goal** the worker must achieve to "pass". Build a
 set that exercises the **branches and failure paths**: happy path, missing/invalid data, the caller
-who won't cooperate, guardrail/jailbreak attempts, language switching, tool-failure handling. Three
+who won't cooperate, guardrail/jailbreak attempts, **prompt-injection / social-engineering** (exercise
+`manipulationDetectionEnabled`), **scope-drift over a long chat** (exercise `focusGuardrailEnabled`),
+language switching, tool-failure handling. Three
 ways to create them — pick per goal, usually (a) for breadth + (b) for the precise edge cases:
 
 - **(a) AI-generate (breadth)** — `POST /scenario/generate` (`GenerateScenarioRequest`:

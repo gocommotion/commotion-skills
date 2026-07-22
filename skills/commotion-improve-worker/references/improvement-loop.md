@@ -83,10 +83,19 @@ term (the transcript wrote a different word than the worker said), so scan the c
 | Re-asked for info already given; spun in a loop | Anti-repetition missing | Add the **don't-re-ask / call-each-tool-once / take-failure-path-once** rules | agents-and-orchestration.md |
 | Re-asked for data that should be known up front (account/profile/tier), or forgot a value the caller gave earlier | No state variable | Define a **state variable** — `EXTRACTED` (capture-and-remember what the caller says) or `LOADED`/`PRE_LOADING` (fetch it once from a tool at call start) — and reference `[var:<title>]` in the prompt | settings-variables-pronunciation.md |
 | Mispronounced a brand name, acronym, or SKU (TTS said it wrong) | No pronunciation entry | Add a **pronunciation dictionary** entry (usually `ALIAS`, e.g. `NPCL` → `"N-P-C-L"`) | settings-variables-pronunciation.md |
-| Answered a forbidden/off-limits topic, or gave advice it shouldn't | Guardrail gap | Add **forbidden words** / a **custom guardrail** ("no financial/medical advice") | control-and-reliability.md |
-| Blocked a legitimate request | Guardrail too strict | Loosen the toxicity threshold / narrow the forbidden list / fix the custom check | control-and-reliability.md |
+| Answered a forbidden/off-limits topic, or gave advice it shouldn't | Guardrail gap | Add a **forbidden-word group** / a **custom guardrail** ("no financial/medical advice") | control-and-reliability.md |
+| Blocked a legitimate request | Guardrail too strict | Turn off the offending **toxicity category** / narrow the forbidden-word group / fix the custom check | control-and-reliability.md |
+| Fell for a jailbreak / prompt-injection / social-engineering attempt | Injection defense missing | Enable **`manipulationDetectionEnabled`** (advanced safety) | control-and-reliability.md |
+| Drifted off-scope over a long conversation | No anti-drift layer | Enable **`focusGuardrailEnabled`** (advanced safety) | control-and-reliability.md |
 | Ended the call prematurely or never ended it | Termination logic | Fix the end-call conditions in the prompt; ensure the `end_call` built-in is available | tools-and-capabilities.md |
 | Slow turns flagged by a Latency metric | Architecture / verbosity | Trim the prompt, reduce tool round-trips, or raise the Latency threshold for a tool-heavy worker | run-evals/references/eval-metrics.md |
+
+**A guardrail interception currently errors on the run/eval path (known code-side bug).** Verified live:
+when toxicity / a forbidden-word group / a custom check / manipulation detection intercepts, the turn
+should deliver your fallback text — but today it returns `status:"FAILED"` with a generic *"An error has
+occurred … reference number …"* message (a backend issue, not the intended behaviour). So before
+"fixing" a FAILED turn, check the input: on an abusive/off-limits/injection message that FAILED may just
+be the guardrail intercepting. Only loosen the guardrail if it intercepted a *legitimate* request.
 
 For a multi-agent worker, also check **routing**: if the wrong specialist handled a request, fix the
 orchestrator (`workerLevelPrompt`) routing rules rather than the specialist's prompt.

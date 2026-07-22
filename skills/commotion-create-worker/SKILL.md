@@ -174,20 +174,28 @@ Build a candidate `AiWorkerRequest` grounded in Phase 0. Hold it as the `body` y
   competitor/confidential terms in what it says, or a domain rule it could otherwise violate ("never
   quote a price / give financial advice"). If you can't name why the *output* is risky, leave outbound
   off. Think about what THIS domain handles and protect it, grounded in `/aiworker/metadata`:
-  - Handles personal/financial data (insurance, banking, healthcare)? → **PII masking** (Commotion
-    detector) plus **regex masking** for the specific sensitive fields it sees (card numbers, account
+  - Handles personal/financial data (insurance, banking, healthcare)? → **PII masking**
+    (`builtInPiiCategoryConfigRequest` — Commotion's built-in detector) plus **regex masking**
+    (`piiMaskingRegexPatternConfigList`) for the specific sensitive fields it sees (card numbers, account
     numbers, Aadhaar/SSN, policy numbers) with `MASK`/`REDACT` — this one legitimately runs **both**
-    directions (mask what the caller says *and* what the model reads back).
-  - Company/brand context? → **forbidden words** for competitor names, internal/confidential terms,
-    off-limits topics (+ a fallback response).
-  - Any customer-facing bot → **toxicity `inbound`** (the four categories at sensible thresholds) to
-    catch abusive/jailbreak/prompt-injection input; add **`outbound` toxicity only with a reason**.
-    Add **custom checks** for domain rules (e.g. "never give medical/financial advice") — and put those
-    on the side that matters (a "don't accept X" rule is `inboundCustomGuardrailConfigs`; a "never *say*
-    X" rule is `outboundCustomGuardrailConfigs`).
+    directions (mask what the caller says *and* what the model reads back). On **voice**, add
+    `audioMaskingConfigRequest` to redact PII in call recordings.
+  - Company/brand context? → **forbidden-word groups** (`forbiddenWordGroupsConfigRequest`) for
+    competitor names, internal/confidential terms, off-limits topics — one group per intent, each with
+    its own fallback message.
+  - Any customer-facing bot → **toxicity `inbound`** (per-category on/off toggles in `toxicityCategories`,
+    model `QWEN3_GUARD`) to catch abusive input; add **`outbound` toxicity only with a reason**. Add
+    **custom checks** for domain rules (e.g. "never give medical/financial advice") — flip
+    `inboundEnabled`/`outboundEnabled` and put each rule on the side that matters (a "don't accept X" rule
+    is `inboundCustomGuardrailConfigs`; a "never *say* X" rule is `outboundCustomGuardrailConfigs`).
+  - Exposed to adversarial users (public/customer-facing)? → **`advancedSafetyConfigRequest`**:
+    `manipulationDetectionEnabled` is the first-class prompt-injection / jailbreak / social-engineering
+    defense (it terminates or escalates) — prefer it over inbound toxicity alone for that threat. Turn on
+    `focusGuardrailEnabled` for long/open-ended sessions that tend to drift off-scope.
   Pick the subset the use case warrants and justify each to the user — including **why each direction**.
-  They apply in a fixed backend order — you don't set order. (e.g. a banking assistant → PII + card/
-  account masking (both directions) + competitor forbidden words + **inbound** toxicity + a "no
+  They apply in a fixed backend order — you don't set order; the only execution knob is `executionMode`
+  (`STREAMING`/`BLOCKING`, voice-only). (e.g. a banking assistant → PII + card/account masking (both
+  directions) + competitor forbidden-word group + **inbound** toxicity + manipulation detection + a "no
   financial advice" **outbound** custom check.)
 - **Models + fallback** — choose the primary model and an ordered fallback so a provider hiccup
   doesn't take the worker down. **Where this lives depends on channel (verified live):** a **voice**
