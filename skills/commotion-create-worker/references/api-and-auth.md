@@ -19,31 +19,25 @@ The domain reference files (`aiworker-lifecycle.md`, `agents-and-orchestration.m
   live spec works, not just those listed below; the spec is cached server-side after the first call.
   **Never invent a field that isn't in the schema.**
 
-Both tools also take an optional **`token`** argument (interim): pass the `access_token` from
-`commotion_login` on every call — see **Auth** below.
+Auth is handled entirely by the MCP server — you never pass a token (see **Auth** below).
 
 Read ids straight from a result — after `POST /aiworker` the new id is `body.id`; from a list call
 it's `body[0].id`. Feed that id into the next call's `path`. (No shell, no `jq` — you read the JSON
 the tool returns.)
 
-## Auth — interim in-session login (until the Commotion login UI ships)
+## Auth — automatic browser login (OAuth)
 
-BE's browser login is still in progress, so for now you authenticate **in-session**, once per session:
+Auth is owned by the MCP client + server; you never handle a credential or token. On first use of the
+Commotion MCP, the client opens a Commotion login in the browser (OAuth 2.1 authorization-code +
+PKCE); the user signs in once, and the client then attaches the resulting token as
+`Authorization: Bearer` on **every** call automatically. The MCP server validates/forwards it to the
+dev3 backend — the raw token never enters the conversation.
 
-1. Ask the user for their **Commotion email + password** (`AskUserQuestion`; workspace id is optional
-   — omit for their primary workspace). Don't guess these.
-2. Call **`commotion_login`** `{ "user_id": <email>, "password": <pw>, "workspace_id"?: <id> }` →
-   returns `{ "access_token", "expires_in", "user_id", "workspace_id" }`.
-3. Pass that `access_token` as the **`token`** argument on **every** `commotion_request` /
-   `commotion_schema` call for the rest of the session. It authenticates dev3 as this user and lasts
-   ~1h — if calls start returning `401`, call `commotion_login` again.
-
-dev3 attributes actions to the signed-in user (e.g. a created worker's `createdByUserId` is their
-email). The credential + token pass through the session for now — this is **interim** and goes away
-when the browser login lands (auth becomes automatic and you never ask for a token). Never reuse
-another user's token. If the tools aren't available at all, the Commotion MCP isn't connected — ask
-the user to add/authorize it. (Swagger UI for humans:
-`https://api-tier0.dev3.gocommotion.com/swagger-ui/index.html`.)
+So: **never** ask the user for an email/password, **never** pass a `token` argument, and never reuse
+another user's token. dev3 attributes actions to the signed-in user (e.g. a created worker's
+`createdByUserId` is their email). If the two tools aren't available at all, the Commotion MCP isn't
+connected — ask the user to add/authorize it via `/mcp` (select `commotion` → Authenticate). (Swagger
+UI for humans: `https://api-tier0.dev3.gocommotion.com/swagger-ui/index.html`.)
 
 ## Error semantics
 

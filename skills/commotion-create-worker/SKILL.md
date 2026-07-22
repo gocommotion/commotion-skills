@@ -11,7 +11,7 @@ description: >-
   "worker". Handles the dev3 lifecycle (draft↔live versions, single vs multi-agent, enabling the
   agent, the voice/language schema). Calls the dev3 backend through the thin Commotion MCP server
   (OAuth — no API key in the transcript).
-allowed-tools: Read, AskUserQuestion, Bash, Skill, mcp__commotion__commotion_login, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
+allowed-tools: Read, AskUserQuestion, Bash, Skill, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
 ---
 
 # Commotion: Create a Worker
@@ -50,15 +50,13 @@ All platform I/O goes through the connected **Commotion MCP** server — two too
   Schema with its `$defs`. Any component name in the live spec works. **Never invent a field that
   isn't in the schema.**
 
-**Auth — sign in first (interim, until the browser login ships).** Before any `commotion_request` /
-`commotion_schema` call, authenticate once for the session: (1) ask the user for their **Commotion
-email + password** with `AskUserQuestion` (workspace id optional); (2) call **`commotion_login`**
-`{ "user_id", "password", "workspace_id"? }` → `{ "access_token", … }`; (3) pass that `access_token`
-as the **`token`** argument on **every** `commotion_request` / `commotion_schema` call this session
-(~1h — re-run `commotion_login` on a `401`). dev3 attributes the worker to the signed-in user
-(`createdByUserId` = their email). This is interim — when the browser login lands, auth is automatic
-and you won't ask for a token (see `references/api-and-auth.md`). If the tools aren't available at
-all, the MCP isn't connected — ask the user to add/authorize it.
+**Auth is automatic (browser login).** The Commotion MCP handles auth via OAuth: on first use it
+opens a Commotion login in the browser, then attaches the user's token to **every**
+`commotion_request` / `commotion_schema` call for you — the raw token never enters the conversation.
+Never ask the user for an email/password or a token, and don't pass a `token` argument. dev3
+attributes the worker to the signed-in user (`createdByUserId` = their email). If the tools aren't
+available at all, the MCP isn't connected — ask the user to add/authorize it via `/mcp` (see
+`references/api-and-auth.md`).
 
 **Read ids from results, not `jq`:** `commotion_request` returns the parsed `body` — after a create
 the new id is `body.id`; from a list it's `body[0].id`. Feed that id into the next call's `path`.

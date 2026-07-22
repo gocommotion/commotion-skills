@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-07-22 — 1.4.0 — browser-login OAuth is live; interim in-chat login removed
+
+The Commotion backend shipped its full OAuth 2.1 authorization server, so auth is now the automatic
+**browser login** the skills always pointed toward — the interim "ask for email + password →
+`commotion_login`" stopgap is gone. On first use of the Commotion MCP the client opens a Commotion
+login in the browser, the user signs in once, and the token is attached to every call automatically;
+the raw credential/token never enters the conversation.
+
+- **Skills no longer collect credentials.** All five `SKILL.md` files drop
+  `mcp__commotion__commotion_login` from `allowed-tools` and replace the "sign in first (interim)"
+  preamble with the automatic-OAuth wording (never ask for an email/password or a token, never pass a
+  `token` argument). `commotion-create-worker/references/api-and-auth.md`'s Auth section is rewritten
+  from interim in-session login to the OAuth browser flow, and the optional `token` note is removed.
+- **MCP server flipped to the Path B end-state** (`commotion-mcp` repo). `interim_mode` is now off:
+  `/mcp` is an OAuth resource server that emits the RFC 9728 `401` challenge (so the client opens the
+  browser), advertises the BE authorization server
+  (`https://auth-tier0.dev3.gocommotion.com/auth/oauth/mcp`) in
+  `/.well-known/oauth-protected-resource`, and forwards the bearer to Kong. The token verifier is now
+  **decode-and-forward** — the BE issues HS256 JWTs with no JWKS, so it enforces `exp` and forwards
+  the token (Kong/BE are the real authorization gate) rather than verifying an RS256/JWKS signature.
+
 ## 2026-07-22 — 1.3.0 — migrate to the redesigned Guardrails API + new safety layers
 
 The backend shipped a redesigned Guardrails schema (dev3 Swagger `/v3/api-docs/public`). Guardrails

@@ -10,7 +10,7 @@ description: >-
   generate-scenarios → **run-evals** → improve-worker). Needs scenarios to exist first
   (commotion-generate-scenarios). Calls the dev3 backend through the thin Commotion MCP server
   (OAuth — no API key in the transcript).
-allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_login, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
+allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
 ---
 
 # Commotion: Run Evals (Simulate + Score)
@@ -21,11 +21,11 @@ failure failed. Optionally define **eval metrics** (Hallucination, CSAT, latency
 for richer signal. You make the platform I/O through the connected **Commotion MCP** server's two tools
 (`commotion_request` / `commotion_schema`). **Every write (metrics, the run) is shown to the user and approved first.**
 
-**Sign in first (interim, until the browser login ships):** before any `commotion_request` /
-`commotion_schema` call, ask the user for their **Commotion email + password** (`AskUserQuestion`),
-call **`commotion_login`** `{ user_id, password, workspace_id? }`, and pass the returned
-`access_token` as the **`token`** argument on every subsequent tool call this session (~1h; re-run on
-a `401`). When BE's browser login lands this step goes away (auth becomes automatic).
+**Auth is automatic (browser login).** The Commotion MCP handles auth via OAuth: on first use it
+opens a Commotion login in the browser, then attaches the user's token to every `commotion_request` /
+`commotion_schema` call for you — the token never enters the conversation. Never ask the user for an
+email/password or a token, and don't pass a `token` argument. If the two tools aren't available at
+all, the MCP isn't connected — ask the user to add/authorize it via `/mcp`.
 
 This is **step 3 of the worker quality loop**:
 

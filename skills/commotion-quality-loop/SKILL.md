@@ -15,7 +15,7 @@ description: >-
   commotion-generate-scenarios; run evals only → commotion-run-evals; improve only →
   commotion-improve-worker. Calls the dev3 backend through the thin Commotion MCP server (OAuth — no
   API key in the transcript).
-allowed-tools: Read, AskUserQuestion, Skill, mcp__commotion__commotion_login, mcp__commotion__commotion_request
+allowed-tools: Read, AskUserQuestion, Skill, mcp__commotion__commotion_request
 ---
 
 # Commotion: Quality Loop (end-to-end orchestrator)
@@ -34,11 +34,11 @@ version, scenario ids, latest simulation id, pass-rate), and make the loop/thres
 Every write stays human-approved, and **deploy is always user-gated** — same discipline as the
 specialists.
 
-**Sign in first (interim, until the browser login ships):** at the start, ask the user for their
-**Commotion email + password** (`AskUserQuestion`) and call **`commotion_login`**; pass the returned
-`access_token` as the **`token`** argument on this skill's own `commotion_request` calls. Each
-specialist you invoke via **Skill** signs in the same way, so the user may be asked more than once —
-an interim limitation that goes away when BE's browser login lands.
+**Auth is automatic (browser login).** The Commotion MCP handles auth via OAuth — on first use it
+opens a Commotion login in the browser and attaches the user's token to every call, for this skill
+and every specialist it invokes via **Skill**. Never ask the user for an email/password or a token,
+and don't pass a `token` argument. If the tools aren't available, the MCP isn't connected — ask the
+user to authorize it via `/mcp`.
 
 ## When to use this (vs a specialist)
 
