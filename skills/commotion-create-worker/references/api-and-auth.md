@@ -82,9 +82,18 @@ Paths are relative to the base URL. "Schema" is the `commotion_schema` name for 
 | GET | `/aimodel` | supported models (modelCode/providerCode/id) | — |
 | POST | `/aiworker/run` | run the worker in text — TEST it (returns `{response,status,...}`) | `AiWorkerRunRequest` |
 
-`AiWorkerRunRequest` requires `workerId` + `messageText`; reuse `conversationId`/`sessionId` across
-turns. Parse the response tolerantly (the body can contain raw newlines) and retry on 5xx (the
-endpoint is occasionally flaky). Use this to evaluate prompt adherence and hallucination before handoff.
+`AiWorkerRunRequest`'s schema-required fields are `workerId` + `messageText`, but two more conditions
+apply at runtime (verified live): (1) you must pass an **identity** — one of `userId` /
+`fingerprintId` / `audienceId` — or the call `400`s with *"At least one of userId, fingerprintId, or
+audienceId must be provided"*; and (2) the **worker must be deployed (LIVE) with an enabled agent** —
+running a draft returns `status:"FAILED"` *"Worker is not available…"*, and deploying a `SINGLE_AGENT`
+worker with no enabled agent `400`s. Reuse `conversationId`/`sessionId` across turns. Parse the response
+tolerantly (the body can contain raw newlines) and retry on 5xx (the endpoint is occasionally flaky).
+Use this to evaluate prompt adherence and hallucination before handoff. **Caveat (known code-side bug):
+when a guardrail intercepts a turn, the run currently returns `status:"FAILED"` with a generic *"An error
+has occurred … reference number …"* message instead of the configured fallback text — a backend issue,
+not intended behaviour (see `control-and-reliability.md`). Verify guardrail UX in the delivered channel,
+not here.**
 
 ### Agents
 | Method | Path | Purpose | Schema |

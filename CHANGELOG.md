@@ -1,5 +1,49 @@
 # Changelog
 
+## 2026-07-22 — 1.3.0 — migrate to the redesigned Guardrails API + new safety layers
+
+The backend shipped a redesigned Guardrails schema (dev3 Swagger `/v3/api-docs/public`). Guardrails
+still live on `AiWorkerRequest.guardrailConfigRequest` set via `POST`/`PUT /aiworker` — transport, the
+draft gate, and the inbound-vs-outbound direction philosophy are unchanged — but the nested shape
+changed in breaking ways and gained new safety features. The skills documented the old shape, so they
+would have built invalid/outdated payloads. All guardrail-facing skill text is updated to the new
+schema and the two new capabilities are now taught.
+
+- **Breaking schema fixes** (`commotion-create-worker/references/control-and-reliability.md` + Phase 3):
+  - **Toxicity** — `toxicityDetectionMethod:"LLM_BASED_DETECTION"` → `toxicityDetectionModel:"QWEN3_GUARD"`;
+    float `toxicityThresholds` → per-category boolean `toxicityCategories`; `actionOnToxicityDetection`
+    removed.
+  - **Forbidden words** — flat `forbiddenWordsConfigRequestList` → grouped
+    `forbiddenWordGroupsConfigRequest:{enabled, wordGroups:[{words, fallbackMessage, endCallOnDetection}]}`.
+  - **PII** — `piiByCommotionEnabled`/`piiByCommotionConfigList` → `builtInPiiCategoryConfigRequest`
+    (`enabled` + `builtInCategories:[{category, action}]`); regex items gain `maskingRegex`.
+  - **Custom checks** — added `inboundEnabled`/`outboundEnabled`/`isVoiceEnabled` toggles + item-level
+    `endCallOnDetection`.
+- **New safety features now taught**:
+  - **`advancedSafetyConfigRequest`** — `manipulationDetectionEnabled` (first-class prompt-injection /
+    jailbreak / social-engineering defense) and `focusGuardrailEnabled` (anti-drift / scope re-alignment).
+    Wired into Phase 3's interview, the improve-worker symptom→fix table, and the run-evals signal list.
+  - **Voice-only controls** — `executionMode` (`STREAMING`/`BLOCKING`), `endCallOnDetection` across
+    toxicity / forbidden groups / custom rules, and audio masking for call recordings
+    (`audioMaskingConfigRequest`).
+- **Scenario coverage** (`commotion-generate-scenarios/SKILL.md`) — adds prompt-injection /
+  social-engineering and scope-drift scenarios so the new advanced-safety layers get exercised.
+- The category names for `toxicityCategories` and `builtInCategories[].category` remain **dynamic** —
+  the skills continue to ground them in `GET /aiworker/metadata`, not hard-coded enums.
+- **Verified live** — round-tripped all six blocks on chat + voice draft workers, and drove a deployed
+  worker through `POST /aiworker/run` against a no-guardrail control. Findings now baked into the skills:
+  the blocking guardrails (toxicity, forbidden-word groups, inbound custom, manipulation detection) do
+  **intercept** the tripping input (control worker succeeded on the same inputs); however a block
+  currently returns `status:"FAILED"` with a generic *"reference number"* error instead of the
+  configured fallback text — a **known code-side/backend bug**, not the guardrail contract, so the skills
+  flag it as such and steer guardrail-UX verification to the delivered channel rather than the sync run
+  API. PII masking is **not** applied on the sync text run API either; `regexPatternEnabled` is required
+  whenever `piiMaskingConfigRequest` is present. All test workers were deleted afterwards. Guardrail
+  **endpoints/auth are unchanged** (still `POST`/`PUT /aiworker`), so `api-and-auth.md` needed no
+  guardrail change — but its `/aiworker/run` note was corrected with two runtime requirements found while
+  testing: a run needs an identity (`userId`/`fingerprintId`/`audienceId`) and a deployed worker with an
+  enabled agent.
+
 ## 2026-07-22 — 1.2.1 — close production-worker gaps: state vars, quality-loop handoff, guardrail direction
 
 Three gaps surfaced from a real production build (a flight-booking worker) where the model built the

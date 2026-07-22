@@ -69,7 +69,17 @@ guardrails — reach for the matching feature rather than stuffing the prompt:
 - **Re-asked / forgotten data** — the worker asks again for something already given, or that should have
   been pre-loaded. → define a **state variable** (same reference).
 - **Answered an off-limits topic, or blocked a legitimate one.** → add / loosen a **guardrail** or a
-  forbidden-word set (`commotion-create-worker/references/control-and-reliability.md`).
+  forbidden-word group (`commotion-create-worker/references/control-and-reliability.md`).
+- **Fell for a jailbreak / prompt-injection attempt, or drifted off-scope over a long chat.** → enable
+  **advanced safety** (`manipulationDetectionEnabled` for injection, `focusGuardrailEnabled` for drift)
+  (`commotion-create-worker/references/control-and-reliability.md`).
+
+**A guardrail interception currently errors on the run path (known bug).** Verified live: when a
+guardrail intercepts, the turn should return your fallback text, but today it comes back as a **FAILED**
+run with a generic *"An error has occurred … reference number …"* message — a **code-side/backend
+issue**, not the intended behaviour. So on an adversarial/off-limits scenario, a FAILED turn with that
+error may be the guardrail intercepting rather than a prompt/logic bug — confirm by checking the input
+and re-testing in the delivered channel before "fixing" the worker.
 
 `commotion-improve-worker` turns these into edits automatically; the full symptom→fix table is its
 `improvement-loop.md`.
