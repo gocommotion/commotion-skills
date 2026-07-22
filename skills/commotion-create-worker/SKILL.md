@@ -11,7 +11,7 @@ description: >-
   "worker". Handles the dev3 lifecycle (draft↔live versions, single vs multi-agent, enabling the
   agent, the voice/language schema). Calls the dev3 backend through the thin Commotion MCP server
   (OAuth — no API key in the transcript).
-allowed-tools: Read, AskUserQuestion, Bash, mcp__commotion__commotion_login, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
+allowed-tools: Read, AskUserQuestion, Bash, Skill, mcp__commotion__commotion_login, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
 ---
 
 # Commotion: Create a Worker
@@ -69,10 +69,13 @@ reference files are the *behavior* the schema doesn't tell you.
 
 **Execution rules:** one phase at a time, in order; read the reference named by a phase before you
 act on it; show every write before you make it. Phases 7, 8, 8.5 are **use-case-driven** — run each
-when the goal calls for it (grounding; tools; remembered state / pronunciation), not by default and not
+when the goal calls for it (grounding; tools; remembered state; pronunciation), not by default and not
 never. Judging what the worker actually needs — from the goal and the platform's use-case patterns — is
 the point of the skill: add the feature that keeps the prompt clean, skip the one that would just be
-noise.
+noise. **Caveat on Phase 8.5:** its two halves are not equally optional — **state variables are
+frequently *necessary*** for any worker that collects or looks up data (decide them in Phase 1 and
+create them here), whereas the **pronunciation** half is genuinely usually *discovered later* from a
+sim run. Don't let "8.5 is optional" cause you to skip the memory the use case needs.
 
 ## Phase 0 — Ground yourself in the real schema (always, before drafting)
 
@@ -102,8 +105,12 @@ surface: `commotion_request` `GET /ai-worker-tool/metadata` (the built-in action
 Extract: business goal, language(s), **voice or chat**, domain, tone, hard constraints, whether the
 work is **one job (single agent)** or **several distinct skills that should be routed between
 (multi-agent / workflow)**, and **which optional capabilities** the goal needs — knowledge grounding
-(Phase 7), tools/actions (Phase 8), structured output, guardrails beyond the safety floor. Ask only
-for what you can't infer — `AskUserQuestion`, batched, few.
+(Phase 7), tools/actions (Phase 8), **whether the worker must remember caller-provided values across
+the call (so it doesn't re-ask) or pre-load profile/account/booking data — i.e. state variables (Phase
+8.5)**, structured output, guardrails beyond the safety floor. **Decide the state-variable question
+here, not at the end** — most transactional use cases (booking, renewal, account lookup) need to
+retain identifiers (PNR, passenger name, order id, dates) and that belongs in a variable, not the
+prompt. Ask only for what you can't infer — `AskUserQuestion`, batched, few.
 
 ## Phase 2 — Choose the setup type
 
@@ -159,17 +166,29 @@ Build a candidate `AiWorkerRequest` grounded in Phase 0. Hold it as the `body` y
   their conversational language. (Verified live: without this, the agent flips Hindi→English the
   moment the caller says their number in English.) Exact voice-block path in `references/aiworker-lifecycle.md`.
 - **Guardrails** (`guardrailConfigRequest`) — **design them from the use case, don't apply a generic
-  set.** Think about what THIS domain handles and protect it, grounded in `/aiworker/metadata`:
+  set.** **Direction matters — this is the mistake to avoid: `inbound` filters the *caller's* message
+  before it reaches the model; `outbound` filters the *model's own output* before it's spoken/sent.**
+  The model already has provider-side safety training, so it rarely emits toxic content on its own —
+  **default to inbound-only for toxicity, and don't reflexively enable outbound.** Outbound is for the
+  narrow cases where the *model's* text is the risk: masking PII it might echo back, blocking
+  competitor/confidential terms in what it says, or a domain rule it could otherwise violate ("never
+  quote a price / give financial advice"). If you can't name why the *output* is risky, leave outbound
+  off. Think about what THIS domain handles and protect it, grounded in `/aiworker/metadata`:
   - Handles personal/financial data (insurance, banking, healthcare)? → **PII masking** (Commotion
     detector) plus **regex masking** for the specific sensitive fields it sees (card numbers, account
-    numbers, Aadhaar/SSN, policy numbers) with `MASK`/`REDACT`.
+    numbers, Aadhaar/SSN, policy numbers) with `MASK`/`REDACT` — this one legitimately runs **both**
+    directions (mask what the caller says *and* what the model reads back).
   - Company/brand context? → **forbidden words** for competitor names, internal/confidential terms,
     off-limits topics (+ a fallback response).
-  - Any customer-facing bot → **toxicity** inbound + outbound (the four categories at sensible
-    thresholds), and **custom checks** for domain rules (e.g. "never give medical/financial advice").
-  Pick the subset the use case warrants and justify each to the user. They apply in a fixed backend
-  order — you don't set order. (e.g. a banking assistant → PII + card/account masking + competitor
-  forbidden words + toxicity + a "no financial advice" custom check.)
+  - Any customer-facing bot → **toxicity `inbound`** (the four categories at sensible thresholds) to
+    catch abusive/jailbreak/prompt-injection input; add **`outbound` toxicity only with a reason**.
+    Add **custom checks** for domain rules (e.g. "never give medical/financial advice") — and put those
+    on the side that matters (a "don't accept X" rule is `inboundCustomGuardrailConfigs`; a "never *say*
+    X" rule is `outboundCustomGuardrailConfigs`).
+  Pick the subset the use case warrants and justify each to the user — including **why each direction**.
+  They apply in a fixed backend order — you don't set order. (e.g. a banking assistant → PII + card/
+  account masking (both directions) + competitor forbidden words + **inbound** toxicity + a "no
+  financial advice" **outbound** custom check.)
 - **Models + fallback** — choose the primary model and an ordered fallback so a provider hiccup
   doesn't take the worker down. **Where this lives depends on channel (verified live):** a **voice**
   worker sets its LLM provider/model **and its fallback** in the **Voice Settings** block
@@ -389,6 +408,12 @@ decide each from the goal** (the way you design guardrails from the use case in 
 one the use case calls for so the *prompt stays clean* instead of carrying that work itself. Full field
 shapes and the verified-live gotchas are in `references/settings-variables-pronunciation.md`.
 
+**State it out loud before moving on:** *does this worker need to remember anything the caller gives it,
+or pre-load any record?* If yes — and for booking / renewal / account / order / lookup flows the answer
+is almost always yes — that is a **state variable**, and skipping it pushes "remember X" into the prompt
+where it bloats and misbehaves. This decision was flagged in Phase 1; resolve it here, don't silently
+drop it.
+
 - **State variables** (`/ai-worker-variable-schema`) — **add these whenever the goal needs the worker to
   remember caller-provided values (so it doesn't re-ask) or to pre-load profile/CRM/account data.** This
   is frequently *necessary*, not optional: a variable keeps "remember X / fetch X once" out of the prompt
@@ -445,14 +470,27 @@ is the one irreversible-feeling step for the user — gating it on confirmation 
 Call `commotion_request` `{ "method": "GET", "path": "/aiworker/<worker-id>" }`. This now returns the
 live worker — show the user the result and its agents.
 
-## Phase 12 — Test the agent (don't stop at CRUD)
+## Phase 12 — Prove it behaves (don't stop at CRUD)  ·  HUMAN INPUT
 
-Creating the worker is not the goal — a worker that behaves well is. For a quick text spot-check drive
-a few real turns through the agent (below). For **systematic** testing — scenarios, a pass-rate, and
-an iterate-until-good loop — hand off to the quality-loop skills: `commotion-generate-scenarios` →
-`commotion-run-evals` → `commotion-improve-worker`. **Note:** those automated simulations/evals are
-**voice-only** and need the worker **deployed at least once** (a never-deployed or chat worker can't be
-simulated) — so deploy a voice build first if you'll evaluate it. Text spot-check:
+Creating the worker is not the goal — a worker that *behaves well* is. **A build that is never tested
+is not done**, and for anything beyond a throwaway demo this phase is mandatory, not a footnote.
+
+**Recommend the quality loop by default.** After confirming live, and *especially for a production /
+non-trivial use case*, don't just note that testing exists — **offer to run it**. `AskUserQuestion`:
+"The worker is built and live. For a production use case I recommend running the quality loop next —
+generate test scenarios, evaluate the pass-rate, and iterate until it clears a threshold. Run it now?"
+(Run the quality loop / Just a quick spot-check / Stop here.)
+
+- **On "run it":** invoke the **`commotion-quality-loop`** skill (via the `Skill` tool), handing it the
+  worker id you just built — it owns build→scenarios→evals→improve and the deployed-voice prerequisite
+  (it will convert/deploy as needed). This is the right path for a production statement; stopping at a
+  built worker leaves it unverified.
+- **On "quick spot-check":** drive a few real turns yourself (below).
+- **Prerequisite for the loop (state it):** automated simulations/evals are **voice-only** and need the
+  worker **deployed at least once** (a never-deployed or chat worker can't be simulated) — so a voice
+  build deployed in Phase 10 is what makes the loop runnable.
+
+Text spot-check (the lightweight path):
 
 Call `commotion_request` `{ "method": "POST", "path": "/aiworker/run", "body": {"workerId":
 "<worker-id>", "messageText": "<a realistic opening line>", "conversationId": "t1", "sessionId":

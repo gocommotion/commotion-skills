@@ -6,7 +6,11 @@ description: >-
   approval. This is the single entry point that orchestrates the four specialist skills in order and
   owns the "keep improving until it passes" control flow. Use this when the user wants the WHOLE
   pipeline in one go — e.g. "build a voice bot that books test drives and make it pass 90%", "test and
-  improve my renewal worker until the pass-rate is 80%", "set up X and evaluate it end to end". For a
+  improve my renewal worker until the pass-rate is 80%", "set up X and evaluate it end to end". **Also
+  the default entry point for a production / production-ready / production-grade worker, or any long,
+  detailed problem statement describing a real system to ship** — a production use case implies build +
+  test + iterate, not just build, so prefer this over commotion-create-worker whenever the goal is a
+  worker meant to actually go live for real traffic (even if the user doesn't name a pass-rate). For a
   SINGLE step, defer to the specialist instead: build only → commotion-create-worker; scenarios only →
   commotion-generate-scenarios; run evals only → commotion-run-evals; improve only →
   commotion-improve-worker. Calls the dev3 backend through the thin Commotion MCP server (OAuth — no
