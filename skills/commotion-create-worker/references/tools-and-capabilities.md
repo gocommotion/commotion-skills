@@ -23,7 +23,7 @@ are) and `knowledge-and-rag.md` (what they know).
 | POST / PUT | `/ai-worker-tool/code-block[/{id}]` | sandboxed Python tool |
 | POST | `/ai-worker-tool/code-block/run` | test-run source in the sandbox (stateless) |
 | POST / PUT | `/ai-worker-tool/mcp-server[/{id}]` | external MCP server (⚠ create 500s) |
-| POST / PUT | `/ai-worker-tool/connector[/{id}]` | SaaS connector |
+| POST / PUT | `/ai-worker-tool/connector[/{id}]` | SaaS connector (credential + icon/tags settable on POST only; PUT is actions/webhooks) |
 | POST | `/ai-worker-tool/credential` | store a credential |
 | GET | `/ai-worker-tool/credentials?appIdentifiers=…` | list stored credentials |
 | DELETE | `/ai-worker-tool/credential` | delete credentials (body `{"credentialIds":[…]}`) |
@@ -75,6 +75,15 @@ Body shapes: `commotion_schema` `{ "schema_name": "<Name>" }` — `CreateCustomT
    `POST /aiworker/continue` (see below).
 7. **Show every write before you make it.** Same rule as the rest of the skill — summarise the tool
    you're about to attach (and especially any `REQUIRE_APPROVAL` action) and get a yes.
+8. **A connector needs its credential IN THE CREATE BODY, or it silently fails to register (verified
+   live 2026-07-24).** Put a connected `credentialMetaDataInput.credentialIdentifier` on the
+   `POST /ai-worker-tool/connector` call. Skip it and the tool attaches (`200`) but never registers —
+   empty `actionName`/schemas and the UI banner *"Tools could not be registered — MCP … token is
+   missing."* There is **no PUT to add a credential later** (the update schema has no credential field),
+   so a bare connector can only be fixed by delete + re-create. Also pass `appIconUrl` + `appTags`
+   (from `integration-apps`) and per-action `actionDisplayName` (from `app-actions`) in the same body so
+   it renders like a UI-built connector (icon, Category, action chips) — these are POST-only too. Never
+   attach a connector before a connected credential exists.
 
 ## Picking the kind
 
@@ -137,11 +146,30 @@ create/handshake flow**, not an input/reachability problem — raise with BE bef
 **Connector tool** (`CreateConnectorToolRequest`) — required: `aiWorkerId`, `version`,
 `appMetaDataInput` (`appIdentifier` + display fields, from `GET /ai-worker-tool/integration-apps`),
 `actionMetaDataListInput[]` (each `actionIdentifier` from `GET /ai-worker-tool/app-actions`, with a
-per-action `hitlMode`). **`credentialMetaDataInput` is optional** (verified) — you can attach the
-actions now and add the credential later via `PUT /ai-worker-tool/connector/{id}`. Optional
-`toolWebhookMetaDataInputList[]` (from `GET /ai-worker-tool/webhooks`). The update body
-(`UpdateConnectorToolRequest`) is partial — the action/webhook lists you pass **replace** the existing
-ones. An app-action object is `{identifier, displayName, existsInAiWorker}`.
+per-action `hitlMode`). **⚠ `credentialMetaDataInput` (a `credentialIdentifier`) is functionally
+REQUIRED — bind it in the create body (verified live 2026-07-24).** Without it the connector attaches
+(`200`) but its backing managed MCP server **never registers**: the tool comes back with empty
+`actionName`/`inputSchema`/`outputSchema` and no `credentialMetaDataOutput`, and the UI shows the red
+banner *"Tools could not be registered — MCP server failed to register, or the MCP authentication token
+is missing."* **You CANNOT fix this later with a PUT:** `UpdateConnectorToolRequest` has **no**
+credential field (and no `appMetaData` field) — it carries only `actionMetaDataListInput[]` +
+`toolWebhookMetaDataInputList[]`. So a credential-less (or wrong-icon/tags) connector must be **deleted
+and re-created**. Grab a connected credential from `GET /ai-worker-tool/credentials?appIdentifiers=…`
+(reuse one with `"connected": true`) or complete OAuth in the UI first.
+
+**Populate the display metadata too, or the tool renders bare in the UI (verified live 2026-07-24).**
+A minimal create (only `appIdentifier` + `actionIdentifier` + `hitlMode`) registers fine but shows a
+generic "G" icon, an empty **Category**, and empty **Actions & Webhooks** chips — unlike a UI-created
+connector. Thread these through from the discovery endpoints so it matches the UI:
+- `appMetaDataInput.appIconUrl` ← `GET /integration-apps` → `iconUrl` (the app logo)
+- `appMetaDataInput.appTags` ← `GET /integration-apps` → `integrationAppTags` (drives the **Category** column)
+- `actionMetaDataListInput[].actionDisplayName` ← `GET /app-actions` → `displayName` (the action chips)
+
+(`actionDescription` is accepted but **not persisted** — the backend derives descriptions from the
+action schema at runtime, so don't rely on it.) Optional `toolWebhookMetaDataInputList[]` (from
+`GET /ai-worker-tool/webhooks`). The update body (`UpdateConnectorToolRequest`) is partial — the
+action/webhook lists you pass **replace** the existing ones. An app-action object is
+`{identifier, displayName, existsInAiWorker}`.
 
 **Credential** (`CreateCredentialRequest`, only `appIdentifier` required) — `name`, `displayName`,
 `appIdentifier`, `authIdentifier`, and the auth payload. An app advertises its auth methods in
@@ -197,17 +225,22 @@ POST /ai-worker-tool/mcp-server  { aiWorkerId:<id>, version:0, name:"Docs MCP",
 # response's actionMetaDataOutputList is the discovered actions (when the BE bug is fixed)
 ```
 
-**Connector (SaaS app) — discover, attach, then wire credential:**
+**Connector (SaaS app) — discover, then attach WITH a credential in the SAME create body:**
 ```
-GET  /ai-worker-tool/integration-apps                                       # pick the app; note credentials[].authIdentifier
-GET  /ai-worker-tool/app-actions?aiWorkerId=<id>&version=<draft>&appIdentifier=clockify   # -> {identifier, displayName}
-# attach the action(s) now — credential is OPTIONAL:
+GET  /ai-worker-tool/integration-apps?identifiers=gmail   # note iconUrl, integrationAppTags, credentials[].authIdentifier
+GET  /ai-worker-tool/app-actions?aiWorkerId=<id>&version=<draft>&appIdentifier=gmail   # -> {identifier, displayName}
+GET  /ai-worker-tool/credentials?appIdentifiers=gmail     # pick a connected one -> credentialIdentifier
+# attach WITH the credential + display metadata (icon, tags, per-action displayName) — one shot:
 POST /ai-worker-tool/connector  { aiWorkerId:<id>, version:<draft>,
-  appMetaDataInput:{ appIdentifier:"clockify", appDisplayName:"Clockify" },
-  actionMetaDataListInput:[ { actionIdentifier:"create_client", hitlMode:"REQUIRE_APPROVAL" } ] }
-# then add a credential when you have real auth, and reference it:
-GET  /ai-worker-tool/credentials?appIdentifiers=clockify                    # reuse one if it exists
-# PUT /ai-worker-tool/connector/<toolId>  { …, credentialMetaDataInput:{ credentialIdentifier:"<id>" } }
+  appMetaDataInput:{ appIdentifier:"gmail", appDisplayName:"Gmail",
+    appIconUrl:"https://…/gmail.png", appTags:["Communication"] },
+  credentialMetaDataInput:{ credentialIdentifier:"<connected cred id>" },   # ⚠ REQUIRED — omit and it never registers
+  actionMetaDataListInput:[ { actionIdentifier:"send_message", actionDisplayName:"Send Message",
+    hitlMode:"AUTO_RUN" } ] }
+# verify it registered: GET /ai-worker-tool?aiWorkerId=<id>&version=<draft> -> the action has a real
+#   actionName + inputSchema/outputSchema and a credentialMetaDataOutput (all empty == not registered).
+# NO credential yet? Do NOT attach a bare connector "to fix later" — there is no PUT path to add a
+#   credential; you'd have to DELETE and re-create. Complete OAuth in the UI first, then attach.
 ```
 
 **Credentials — verified live.** The backend **validates** the credential, so dummy/fake keys don't
@@ -217,9 +250,12 @@ invalid key.
 - **OAuth apps** → needs an `authorizationCode` (`code` + PKCE) from a completed consent screen;
   there's no headless way to mint that, so the OAuth handshake happens in the **Commotion UI** and the
   skill references the resulting `credentialIdentifier`.
-Check `GET /ai-worker-tool/credentials?appIdentifiers=…` first and reuse an existing credential rather
-than re-authorising. Because `credentialMetaDataInput` is optional, you can attach the connector's
-actions immediately and add the credential later (`PUT /ai-worker-tool/connector/{id}`) once real auth exists.
+Check `GET /ai-worker-tool/credentials?appIdentifiers=…` first and reuse an existing **connected**
+credential (`"connected": true`) rather than re-authorising. **The credential must go in the connector's
+create body (`credentialMetaDataInput`) — there is no PUT to add it afterwards** (the update schema has
+no credential field). A connector attached without one never registers (empty
+`actionName`/schemas, the red "could not be registered" banner) and can only be fixed by delete +
+re-create. So don't attach a connector until a connected credential exists.
 
 ## Binding a tool to an agent (the `/` mention) — REQUIRED
 
@@ -343,6 +379,20 @@ A real run that attached a custom tool + a built-in action and created an "Order
   `POST /ai-worker-tool/connector` with that action and **no credential** → 200
   (`hitlMode:REQUIRE_APPROVAL` round-tripped). `POST /ai-worker-tool/credential` with a dummy Clockify
   key → `200 {"id":"","success":false}` (keys are validated — dummies don't take).
+- **Connector must carry a credential at create (worker `6a63138755ccadc213ea91c3`, HR Voice Assistant,
+  2026-07-24).** A worker built via the skill attached Gmail + Google Calendar with **no
+  `credentialMetaDataInput`** → tools listed `200` but with empty `actionName`/`inputSchema`/`outputSchema`
+  and no `credentialMetaDataOutput`; the UI showed *"Tools could not be registered — MCP server failed to
+  register, or the MCP authentication token is missing."* A/B on a throwaway worker: same connector
+  **without** a credential → empty action fields (not registered); **with** a connected
+  `credentialIdentifier` → real `actionName` (`gmail-send-message-426`) + discovered schemas +
+  `credentialMetaDataOutput` (registered). `UpdateConnectorToolRequest` has **no credential field** →
+  can't be fixed by PUT; must delete + re-create. Display metadata is separate and also POST-only:
+  passing `appIconUrl` + `appTags` (from `integration-apps`) and per-action `actionDisplayName` (from
+  `app-actions`) makes the tool render with the real icon / **Category** / action chips instead of a
+  generic "G" and blank columns. `actionDescription` was accepted but **not persisted** (returned `""`).
+  (Note `mcpServerIdentifier`/`mcpServerUrl` stay empty for connectors either way — those belong to the
+  external `mcp-server` tool type, not connectors; don't use them as the registration signal.)
 - **Binding** — embedding `[tool:lookup-order-189]` in the Order Concierge agent's `instructions`
   round-tripped intact at the API, wiring the custom tool to that agent (for a UI-visible prompt,
   POST-create the agent — a bare PUT is runtime-only). Token vocabulary across

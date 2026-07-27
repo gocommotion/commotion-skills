@@ -18,7 +18,7 @@ How a simulation runs and how to read results (`/simulation`, `/scenario-run`, `
 | Field | Notes |
 |---|---|
 | `aiWorkerId`, `version` | worker + **version under test** (a draft of a deployed worker is fine) |
-| `scenarioIdToRunPerScenarioMap` | `{scenarioId: nRuns}` — run a scenario N times for consistency. Total ≤ `maxScenarioRunLimit` (20) |
+| `scenarioIdToRunPerScenarioMap` | `{scenarioId: nRuns}` — run a scenario N times for consistency. Total ≤ `maxScenarioRunLimit` (20), **but keep it ≤4 per sim** — see batch note below |
 | `maxDuration` | per-scenario cap in seconds (voice) — e.g. 300 |
 | `maxTurns` | per-scenario cap on turns — e.g. 20 |
 | `llm` | simulator LLM (`{provider,model}`) — codes from `/aimodel`. **Optional**; omit to use the platform default simulator |
@@ -26,6 +26,13 @@ How a simulation runs and how to read results (`/simulation`, `/scenario-run`, `
 Returns `SimulationResponse` with `id` (the `<sim-id>`, read from `body`) and `scenarioRunIds`. **One
 sim at a time** — check `GET /scenario-run/active?aiWorkerId=` first (starting a second while one is
 active is blocked).
+
+**⚠ Batch of 4 (verified operationally).** A sim runs its scenario-runs concurrently over websockets;
+submitting more than **4 total runs** (`sum(scenarioIdToRunPerScenarioMap.values())`) exhausts the
+websocket connections and the excess runs **fail with connection errors** — they surface as the
+failure signature below (`COMPLETED` instantly, `passRate 0.0`, `avgLatencyInMillis null`). Keep each
+`/simulation/run` to **≤4 total runs**; for a larger set, run sequential batches of ≤4 (poll each to
+completion, confirm `/scenario-run/active` is clear, then start the next) and aggregate the pass-rates.
 
 ## Poll → the score
 

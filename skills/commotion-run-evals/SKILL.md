@@ -170,11 +170,20 @@ can contain raw newlines (parse tolerantly). Show each before writing. Full deta
 2. **Choose scenarios + runs-per-scenario.** `RunScenariosRequest.scenarioIdToRunPerScenarioMap` maps
    each `scenarioId` → how many times to run it (run a scenario several times to test consistency).
    Keep total runs within `maxScenarioRunLimit`.
-3. **Confirm and run** — show the user which scenarios, how many runs each, and the simulator `llm`;
-   on yes, call `commotion_request` `{ "method": "POST", "path": "/simulation/run", "body": {aiWorkerId,
-   version, scenarioIdToRunPerScenarioMap:{<scenarioId>:<nRuns>,…}, maxDuration, maxTurns,
-   llm:{provider,model}} }` and read the run id from the result: **`<sim-id> = body.id`** (reused in
-   every later call). **Run against the version under test** (the draft, in the loop).
+3. **⚠ Cap each simulation at 4 total scenario-runs, and batch anything larger (verified operationally).**
+   A single `/simulation/run` runs its scenario-runs concurrently over websockets; more than **4** at
+   once exhausts the websocket connections and runs start **failing with websocket connection errors**
+   (they come back `COMPLETED`-instantly with `passRate 0.0`/`avgLatency null` — the failure signature).
+   So keep **`sum(scenarioIdToRunPerScenarioMap.values()) ≤ 4` per simulation**. If the user picked more
+   scenarios/runs than that, **split into sequential batches of ≤4**: run one batch, poll it to
+   completion (Phase 3), then start the next (each batch is a fresh `/simulation/run` — check
+   `/scenario-run/active` is clear first), and aggregate the pass-rates across batches at the end.
+4. **Confirm and run** — show the user which scenarios, how many runs each (and, if batching, the batch
+   plan), and the simulator `llm`; on yes, call `commotion_request` `{ "method": "POST", "path":
+   "/simulation/run", "body": {aiWorkerId, version, scenarioIdToRunPerScenarioMap:{<scenarioId>:<nRuns>,…}
+   (≤4 total), maxDuration, maxTurns, llm:{provider,model}} }` and read the run id from the result:
+   **`<sim-id> = body.id`** (reused in every later call). **Run against the version under test** (the
+   draft, in the loop).
 
 ## Phase 3 — Poll to completion and read the score
 
@@ -233,6 +242,9 @@ below, summarize the failing scenarios and their reasons and hand off to `commot
   run on them.
 - **Sequential runs** — always check `GET /scenario-run/active` before starting; respect
   `maxScenarioRunLimit`.
+- **Batch of 4** — never submit more than **4 total scenario-runs** in one `/simulation/run`; more
+  overloads the websocket layer and runs fail with connection errors. For larger sets, run sequential
+  batches of ≤4 and aggregate the pass-rates.
 - Run against the **version under test** (the draft in the loop); everything is `(aiWorkerId, version)`
   scoped and `version` is on each record, not a list filter.
 - Show every write (metric, run) before making it; surface backend errors and check the references.
