@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-07-27 — 1.4.1 — connector credentials are create-time only; cap simulations at 4 runs
+
+Two defects found live: a worker whose Gmail/Calendar connectors silently never registered, and
+simulations that "completed" instantly with `passRate 0.0` when too many scenario-runs were submitted at
+once. Both were traced to skill wording that taught the wrong thing; no new endpoints.
+
+- **A connector must carry its credential in the create body**
+  (`commotion-create-worker/SKILL.md` Phase 6 + `references/tools-and-capabilities.md`). The skills said
+  `credentialMetaDataInput` was *optional* — "attach the actions now, `PUT` the credential later". That
+  is wrong: without a connected `credentialIdentifier` the `POST /ai-worker-tool/connector` returns `200`
+  but the backing managed MCP server never registers (empty `actionName`/`inputSchema`/`outputSchema`, no
+  `credentialMetaDataOutput`, and the UI banner *"Tools could not be registered — MCP server failed to
+  register, or the MCP authentication token is missing."*). And there is **no** `PUT` path to fix it —
+  `UpdateConnectorToolRequest` has no credential field — so a bare connector can only be deleted and
+  re-created. The skills now treat the credential as functionally required, tell you to reuse a
+  `"connected": true` credential from `GET /ai-worker-tool/credentials`, and never to attach a connector
+  before one exists.
+- **Display metadata is POST-only too.** A minimal create registers but renders bare in the UI (generic
+  "G" icon, empty **Category**, no action chips). The connector recipe now threads `appIconUrl` +
+  `appTags` (from `/integration-apps`) and per-action `actionDisplayName` (from `/app-actions`) through
+  the same create body. `actionDescription` is accepted but not persisted — don't rely on it.
+- **Cap each simulation at 4 total scenario-runs** (`commotion-run-evals/SKILL.md` Phase 2 + guardrails,
+  `references/simulation-and-results.md`, `commotion-improve-worker/SKILL.md` Phase 3). A sim runs its
+  scenario-runs concurrently over websockets; more than 4 at once exhausts the connections and the excess
+  runs fail with connection errors — surfacing as the existing failure signature (`COMPLETED` instantly,
+  `passRate 0.0`, `avgLatencyInMillis null`). `maxScenarioRunLimit` (20) is no longer the practical
+  ceiling: keep `sum(scenarioIdToRunPerScenarioMap.values()) ≤ 4` per sim and run larger sets as
+  sequential batches of ≤4 (poll each to completion, confirm `/scenario-run/active` is clear, then start
+  the next), aggregating pass-rates at the end.
+
 ## 2026-07-22 — 1.4.0 — browser-login OAuth is live; interim in-chat login removed
 
 The Commotion backend shipped its full OAuth 2.1 authorization server, so auth is now the automatic

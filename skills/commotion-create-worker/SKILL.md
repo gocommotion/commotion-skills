@@ -393,8 +393,13 @@ The full per-kind recipes, body shapes, HITL, and the projection model are in
 - **HITL:** `hitlMode: "REQUIRE_APPROVAL"` lives on **connector, MCP-server, and code-block** actions
   (not built-in); at runtime that action pauses for approval and resumes via `POST /aiworker/continue`.
 - **Connector credentials are validated** — a dummy/invalid key gives `200 {"id":"","success":false}`
-  (no error). `credentialMetaDataInput` is **optional**, so attach the connector's actions first and add
-  the credential (`PUT /ai-worker-tool/connector/{id}`) once you have real auth (OAuth → done in the UI).
+  (no error). **Bind a connected `credentialMetaDataInput` IN THE CONNECTOR CREATE BODY — it is
+  functionally required.** Attach a connector without one and it registers to nothing (empty
+  action names/schemas + the UI banner *"Tools could not be registered — MCP … token is missing"*);
+  there is **no PUT to add the credential afterwards** (update schema has no credential field), so it
+  can only be fixed by delete + re-create. Also pass `appIconUrl`/`appTags` + per-action
+  `actionDisplayName` so it renders like a UI connector. OAuth creds are minted in the UI; reuse a
+  connected one from `GET /ai-worker-tool/credentials`. See `references/tools-and-capabilities.md`.
 - **MCP-server tools** currently fail with a backend `500` on every create (verified live) — a dev3
   defect, not your input; don't promise this kind until BE fixes it.
 - **Auto-capabilities (turn on, don't attach):** *reasoning* via

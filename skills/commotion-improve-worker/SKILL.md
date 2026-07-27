@@ -176,7 +176,9 @@ Point the test set at the draft version and re-run, reusing `commotion-run-evals
   takes scenarioIds + the worker `version`). If the fresh draft version lacks them, recreate/point the
   test set at it via `commotion-generate-scenarios` — see `references/improvement-loop.md`.
 - Check `GET /scenario-run/active?aiWorkerId=<worker-id>` (sequential), then `POST /simulation/run` with
-  `version` = the **draft** version. Poll `GET /simulation/{id}` to COMPLETED and read the new
+  `version` = the **draft** version. **Cap each sim at ≤4 total scenario-runs** — more overloads the
+  websocket layer and runs fail with connection errors; for a larger set, run sequential batches of ≤4
+  and aggregate (see `commotion-run-evals`). Poll `GET /simulation/{id}` to COMPLETED and read the new
   `passRate`. This becomes the round's result and the next round's `<sim-id>`.
 
 ## Phase 4 — Loop control (the decision each round)
