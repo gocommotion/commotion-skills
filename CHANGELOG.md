@@ -1,5 +1,242 @@
 # Changelog
 
+## 2026-07-27 — 1.5.0 — a debug skill: RCA a real call, reproduce it, then fix the worker
+
+All five existing skills point forward — build, generate scenarios, run evals, improve. Nothing pointed
+backward at a worker already serving traffic: there was no path from "this call misbehaved" to "the worker
+is fixed", and the skills carried no observability endpoints at all. Call Analyzer's GET APIs are now
+exposed through Kong and carry exactly the signals an RCA needs, so this release adds the missing
+direction — plus the MCP tool to reach it.
+
+- **New skill `commotion-debug`** — take one misbehaving **live** interaction and end with a worker that
+  no longer misbehaves. Seven phases: scope the defect → pull the evidence from Call Analyzer → root
+  cause + failure class (user confirms) → **reproduce as a failing simulation** → fix on a DRAFT →
+  verify → regression sweep + report, deploying only on an explicit yes. References:
+  `call-analyzer-api.md` (endpoint map, `fields=` sections, measured payload sizes, gotchas) +
+  `rca-taxonomy.md` (7 failure classes + a 10-row platform-artifact signature table) +
+  `repro-and-gates.md` (repro construction, the stochastic gates, the overfitting check, loop bounds).
+  Structured after Cekura's `cekura-fixing-prod-issues`, with the stochastic gates its successor added.
+- **It is deliberately NOT part of the quality loop.** The loop is a build-time pipeline over a *test
+  set*; this starts from *production traffic*. So the skill carries neither the "step N of the quality
+  loop" framing nor the "for the whole pipeline use the orchestrator" line every specialist has, and
+  `commotion-quality-loop` is untouched — it still sequences exactly four specialists. The two connect
+  only through an explicit escalation: when the defect turns out to be breadth rather than one bug (no
+  single root cause, a plateau across 3 rounds, or a broadly failing regression sweep), `commotion-debug`
+  hands `commotion-improve-worker` the worker id and its latest `<sim-id>` as a baseline and says why.
+- **Reproduce before you fix — the gates are rates, not verdicts.** A voice simulation runs real audio, so
+  one run false-passes often enough to be misinformation. **Reproduced = the repro scenario FAILS in ≥ 2
+  of 4 runs** and the failure is visible turn-by-turn in a failing transcript; **fixed = it PASSES in
+  ≥ 3 of 4**. Always reported as the rate (`3/4 pass`). The asymmetry is deliberate: reproducing wants
+  sensitivity, verifying wants confidence. N is 4 because that is the per-simulation websocket cap from
+  1.4.1 — and the `COMPLETED`-instantly / `passRate 0.0` / `avgLatencyInMillis null` signature is called
+  out as *the runs did not happen*, explicitly **not** a reproduction.
+- **New MCP tool `commotion_analyzer`** (needs commotion-mcp ≥ the 2026-07-27 Call Analyzer plane) — a
+  **GET-only** reader for Call Analyzer, added to the skill's `allowed-tools`. It could not ride
+  `commotion_request`: the plane's Kong route authenticates with a static `apikey` header and **rejects
+  the caller's bearer** (verified live — `apikey` alone `200`; `apikey` + `Authorization: Bearer …`
+  `401`), its payloads are browser-sized, and it is read-only at the gateway. The tool has no `method`
+  argument, so nothing in this skill can change production through it, and it returns the same
+  `{status, body}` envelope as `commotion_request` plus `truncated`/`dropped` when a response was
+  shortened. **A truncated body is incomplete evidence** — the skill re-queries narrower rather than
+  concluding from the fragment.
+- **Measured payload sizes drive the fetch strategy** (28-second call, verified live): the five-section
+  fetch is ~60 KB and **gets truncated**, of which `config` alone is ~41 KB. So Phase 1 fetches
+  `transcript,metrics,analysis` (~12 KB) first and pulls `config` or `timeline` separately, only when the
+  symptom implicates them. `/logs` is **1.6–3.9 MB** unshaped (Loki's row limit is hardcoded 5000
+  server-side and not overridable from the query), so it always needs a narrow window *and* a line filter.
+- **Gotchas the reference now carries, all verified live.** `?fields=all` **does not work** — the code
+  does exact set-membership on the comma-split value, so it silently returns the shell; name each
+  section. A call's `workerId` is **`<aiWorkerId>_<version>`** — strip the `_N` for the BE-plane id, and
+  query *both* forms when counting a worker's calls, because both occur. `timeWindow` accepts only `5m`,
+  `15m`, `1h` and **silently ignores** anything else. `/logs` requires `start`+`end` and treats
+  `session_id` as a line-*contains* filter, not a label match. `/api/filter-options` returns empty lists
+  by design.
+- **The repro bridge is flagged as unconfirmed.** `POST /scenario/generate-from-conversation` needs a BE
+  `conversationId`, not the Call Analyzer `callId`; the mapping goes through
+  `GET /conversation/worker-conversations?workerId=` matched on `voiceInteractionId`. That single link is
+  the one step not yet verified live, so Phase 3 ships with an explicit fallback (author the scenario from
+  the verbatim transcript via `commotion-generate-scenarios`) rather than a guess.
+- **Exercised end to end against dev3 (2026-07-28) on a deliberately broken worker**, and the findings
+  are folded back into all three references plus `commotion-run-evals` and `commotion-improve-worker`.
+  A voice worker was built with an agent prompt referencing `[tool:get_policy_status]` (never registered)
+  **plus** instructions to state a renewal amount, a debit, an expiry date and an emailed certificate as
+  confirmed fact and never to admit uncertainty. 12 scenario-runs over 3 simulations produced 10 real
+  calls. The defect reproduced exactly — `toolCallMetrics[0].result == "Error: function
+  'get_policy_status' is not registered."` followed immediately by *"I can confirm that your renewal
+  amount of four thousand nine hundred and ninety nine rupees has already been debited"* — and after the
+  fix on draft v1 all four verify runs passed with *"I cannot verify your renewal details on this call"*
+  and zero fabrications. **Repro 1/1 failed → verify 4/4 passed.** Four corrections came out of it:
+  - **⚠ The evaluator returned no usable verdict on 0 of 8 runs**, so the gates cannot read
+    `scenarioEvaluationResult`. It is not limited to PASS/FAIL — it also comes back **`ERROR`** or an
+    **empty string**, with `scenarioRunStatusLabel` of `Evaluation Error` / `Simulation Error`, on calls
+    that ran 40–60s with complete transcripts (one cause is an evaluator-side bug: *"Goal completion
+    evaluation failed … `channel_types.0` Input should be 'voice' or 'chat' [input_value='customer']"*).
+    Both gates now **bucket runs, exclude no-verdict ones from the denominator, and derive the missing
+    verdicts from the Call Analyzer transcript** via `/api/calls?requestId=<scenario-run-id>`, reporting
+    `n of 4 decided` and saying when a verdict was transcript-derived. *"The evaluator did not run"* and
+    *"not reproducible"* are now explicitly different findings.
+  - **⚠ The 1.4.1 failure signature is ambiguous and was overstated.** `COMPLETED` + `passRate 0.0` +
+    `avgLatencyInMillis null` does **not** prove the runs didn't happen — observed live on a simulation
+    whose four calls all existed with 42–57s durations. Discriminate on per-run `duration` and on whether
+    the calls exist in Call Analyzer. Corrected here and in
+    `commotion-run-evals/references/simulation-and-results.md`.
+  - **⚠ Delete + re-POST of an agent silently invalidates every scenario pinned to it.** The re-POST
+    assigns a **new `aiAgentId`** while scenarios keep the old one, so `POST /simulation/run` returns
+    `500 Simulation trigger failed. Please try again.` — indistinguishable from the known transient flake,
+    and retrying never clears it. Both `commotion-debug` and `commotion-improve-worker` now require
+    re-pointing the scenario (`PUT /scenario/<id>` with the new `aiAgentId`) after a prompt edit. Also
+    verified: `PUT /scenario` **silently ignores a changed `version`** — `aiAgentId` is what binds a
+    scenario to the version under test.
+  - **⚠ A mute tester bot invalidates a whole simulation.** One 4-run sim produced four 54–56s calls in
+    which the caller never spoke (`userTurnCount: 0`, `userAudioSeconds: 0.0`,
+    `stopReason: user_idle_timeout`) because every available personality had **`voiceEnabled: false`**.
+    Phase 3 now pre-flights `GET /personality` for `voiceEnabled: true`, and the taxonomy carries the
+    signature as a harness artifact — a voice gate cannot be read from a mute caller.
+  - New platform-artifact rows also captured: `stopReason: pipeline_error` on four otherwise-clean
+    completed conversations; tool-call markup spoken aloud (`Have a wonderful day! [tool:end_call{reason:`);
+    and `llmFallbackEvents` carrying *"LLM produced empty response (no content, no tool calls)"* with
+    `fallbackSucceeded: false`. Plus: a dangling `[tool:…]` reference is provable **statically** from the
+    prompt against `callMetadata.registered_tools`, and `registered_tools` always contains the built-in
+    `end_call` — so `initialContextCost.toolCount: 1` means "one built-in", not "a custom tool is wired".
+- **Logs are promoted to a first-class signal, with a technique** (exercised live on the broken worker's
+  call). The first cut treated `/logs` mainly as a size hazard to be capped; in practice it is the **best
+  evidence for a config, startup or run-time fault**, because it is the only surface that says *why a call
+  ended*. Measured on one 40-second call: `session_id` alone returns **763 rows / 489 KB**, while adding
+  **`level=error` returns 3 rows / 2.3 KB** — ~200× smaller, and it contains the root cause. So the
+  guidance is now *narrow first*: `level=error`, then widen with `filter=|~:ERROR|ALERT|fatal` (the warning
+  trail) or `q=Transcript` (the conversation as the pipeline logged it). `commotion-debug` Phase 1 reads
+  error logs on **every** call rather than only on an audio/crash symptom, and `commotion-run-evals` /
+  `commotion-improve-worker` gained the same query for any `stopReason` they can't explain.
+  - **A `pipeline_error` is usually a worker config gap, and only the logs show it.** The chain reads
+    `[ALERT] Silent LLM response from CommotionLLMService#0` → **`[ALERT] No fallback services
+    available`** → `ErrorFrame(error: LLM produced empty response (no content, no tool calls),
+    fatal: True)` → `PIPELINE ERROR … terminating call`. The model returned empty — recoverable — and
+    **no fallback model was configured to catch it**, so it killed the call. The taxonomy row for
+    `pipeline_error` previously said "don't treat as a behavioural defect"; it now sends you to the logs
+    and names the fix (configure a fallback). The `llmFallbackEvents` row likewise splits on
+    `fallbackSucceeded`: `true` is a platform artifact, **`false` is a config gap**.
+  - **`sessionId` is the one scoping key, and it works for voice and chat alike** — reframed from the
+    earlier voice-centric *"`session_id` is the call's `requestId`"*. For voice the call's `requestId`
+    **is** its session id (the logs say so: `workspace.save: Saved session <requestId>`,
+    `session_tracker: Session unregistered: ws_<requestId>`); for chat it is the `sessionId` in the path.
+    The endpoints differ only in ergonomics, now documented as a table: voice **requires** an explicit
+    `session_id` plus `start`+`end` (`400` otherwise), while `/api/chat/session/<id>/logs` **auto-scopes
+    from the path and derives its own window**, so the whole escalation ladder runs with no parameters at
+    all. Chat logs come from the same stream (`service_name=voice-ai`) and the same config-logging modules,
+    so every technique — including the config mining — applies to chat unchanged.
+  - **⚠ On the chat endpoint, adding a `filter` silently unscopes the query.** The route passes
+    `session_id=None if line_filters else session_id`, so a line filter *replaces* the session scoping
+    instead of narrowing it. Verified live: `filter=|=:.` returned **4239 rows of which only 837 belonged
+    to that session** — you would think you narrowed and instead widened 5×. On chat, carry the id in the
+    filter chain yourself (`?filter=|=:<sessionId>&filter=|~:ERROR`); `level=` and `q=` are safe, and the
+    voice endpoint is unaffected because it applies `session_id` unconditionally.
+  - **⚠ Corrected my own advice: do not scope logs by label.** The earlier text suggested narrowing via
+    `/logs/labels`. Two verified failures: `label=` alone returns `400 "No search criteria"` (label filters
+    don't satisfy the criteria gate — you still need `session_id`/`filter`/`q`), and the labels list is
+    **cluster-wide, not call-scoped**, so a plausible label silently matches nothing — scoping by
+    `request_id` returned **0 rows** for a call that has 763, because its `/values` holds 934 UUIDs
+    belonging to other services while voice-ai carries its request id in the line body. `session_id`
+    (line-contains, the call's `requestId`) is the only reliable scoping.
+  - **The resolved config is in the logs at DEBUG — and it is the answer to "what did this call actually
+    run with".** Ask for it by name and it is cheap; crawling for it is not (`level=debug` alone is 1488
+    rows / 985 KB). `filter=|~:Raw Config|Worker Config|Request Config` → 3 rows / 61 KB (the worker JSON
+    as fetched *and* as composed); `|~:system instruction` → **1 row / 4.7 KB, the composed system prompt
+    exactly as the model received it**, which is ground truth for any prompt defect;
+    `|~:tools configured|No .* configured` → 5 rows / 2.7 KB, an explicit inventory of what was *not*
+    wired (`No custom code tools configured`, `No A2A agents configured`, …). **That inventory is the
+    earliest possible catch for a dangling `[tool:…]` reference** — logged at call setup, ~10 seconds
+    before the LLM attempts the call and fails. Also present: auto-injected channel variables
+    (`language CHANNEL variable: default=en, allowed=['en']`) and prompt/topology validation verdicts.
+  - So the documented approach is now an **escalation ladder**: `level=error` (3 rows / 2.3 KB) →
+    `level=warning` (4 / 2.8 KB) → `level=info` (21 / 13 KB — transcript turns, latency, session
+    lifecycle) → **targeted** `level=debug` with a `filter`. All four levels work, despite
+    `/logs/labels/level/values` listing only `error` and `info` — one more reason not to trust that
+    endpoint.
+  - **⚠ `createdAt` is not the call start, and the old window advice was wrong.** Verified live: a call
+    with `createdAt 06:07:56` / `duration 39.78s` had log activity from **06:07:14 to 06:08:34** — 42 s of
+    it *before* `createdAt`, including the whole config load. The previously suggested
+    `[createdAt − 30s, createdAt + duration + 30s]` would have missed every config line. Now
+    `[createdAt − duration − 90s, createdAt + 90s]`; Call Analyzer hedges about this itself via
+    `anchorSource: "created_at_minus_duration"` and a `heuristic-transcript-anchor` warning.
+  - Also captured: the modules worth filtering on (`pipeline_events`, `llm_switcher`, `llm_log_observer`,
+    `call_manager` for `Transcript [role]:` lines, `pipeline_factories`, `worker_builder`,
+    `session_tracker`) versus the noise (`unified_serde` and `text_transformer` are a third of all lines);
+    that not every alarming DEBUG line is a fault (`get_session_info … status=404 "Session not found"` is
+    immediately resolved by `SUCCESS (empty) | reason=no_messages` — read the resolution before reporting
+    a 404); and **a call's logs survive the worker being deleted**, so post-mortems stay possible after
+    cleanup.
+- **Call Analyzer is a shared plane, not a debug-only one — every skill that reads a call can now read
+  it.** The first cut scoped `commotion_analyzer` to `commotion-debug` and mentioned it in the loop only
+  as a fallback when the evaluator errored. That was too narrow: **a simulation is just a real call with a
+  robot caller**, so every signal on that plane applies to a scenario-run exactly as it does to production
+  traffic — and `commotion-improve-worker`'s own taxonomy already conceded that some failures ("a
+  mispronunciation surfaces as the tester bot mis-hearing a term") are visible *only* in the transcript.
+  So `mcp__commotion__commotion_analyzer` is now in `allowed-tools` for `commotion-run-evals`,
+  `commotion-improve-worker`, `commotion-generate-scenarios` and `commotion-create-worker`, each with an
+  active use rather than a fallback:
+  - **`commotion-run-evals`** — Phase 4 gains a step that pulls each failing run's actual call
+    (`/api/calls?requestId=<scenario-run-id>` → `?fields=transcript,metrics,analysis`) and folds four
+    things the eval surface cannot answer into the "why" column: did the run happen at all
+    (`userTurnCount`), did the tools fire and what came back (`toolCallMetrics[].result`), was "slow" the
+    tool or the model, and was it the worker's fault at all (`contextCorruption`, `llmFallbackEvents`,
+    `state_load_errors`). This is what makes the handoff actionable — *"failed the goal"* sends the improve
+    loop guessing at the prompt; *"called `get_policy_status`, got `not registered`, then asserted the
+    answer anyway"* names the fix.
+  - **`commotion-improve-worker`** — the failure→fix taxonomy gains a **"what proves it"** column keyed to
+    Call Analyzer signals, plus three new rows it could not previously diagnose (mispronunciation, "too
+    slow" split into tool-vs-model, talked-over-the-caller) and a final **"not the worker at all"** row
+    pointing at the platform-artifact table. Diagnoses must now quote the evidence, not paraphrase it.
+  - **`commotion-generate-scenarios`** — Phase 3c's "from a real call" path now says how to *find* that
+    call (`/api/calls?workerId=`, `/api/reports/latest`) and to copy the caller's turns **verbatim**,
+    since STT artifacts are frequently the trigger. It is the highest-value scenario source available
+    because it is drawn from real behaviour rather than imagination.
+  - **`commotion-create-worker`** — Phase 12's text spot-check now reads itself back as a `COPILOT` session
+    (`/api/chat/session/<id>`), which is the only way to see whether the tools wired in Phase 8 actually
+    fired. A `[tool:<name>]` with no match in `registered_tools` is a dangling reference that returns
+    `"Error: function '<name>' is not registered."` and makes the agent fabricate — the #1 failure that
+    phase already warns about, invisible in the reply text and obvious here.
+  - **`commotion-quality-loop`** — reframed: the specialists are expected to hand back evidence from the
+    calls, and a round returning bare "failed the goal" reasons should be challenged before another round
+    is spent on a guess. The orchestrator itself stays thin — it deliberately does **not** take the tool.
+  - `call-analyzer-api.md` is retitled the **observability plane** and declares itself the canonical map
+    for it (the same idiom `eval-domain-api.md` uses), with an explicit note that outside
+    `commotion-debug` the tool is **optional enrichment**: if it isn't registered, say so once and fall
+    back to `evaluationReasoning` — never block a run on it.
+- **The simulation/eval findings are propagated to every skill that reads a pass-rate**, because they
+  affect the existing quality loop at least as much as the new skill — a `passRate` that isn't measuring
+  the worker breaks a threshold loop worse than it breaks a one-off RCA.
+  - **`commotion-run-evals`** — Phase 3 gains a gate requiring `passRate` to be reported *with how many
+    runs were decided* (a bare `0.0` from unevaluated runs is the misleading case). Phase 4's breakdown
+    becomes a **three-way bucketing** — pass / fail / **not evaluated** — with the not-evaluated bucket
+    excluded from the rate and passed downstream *labelled as such*, never as a failure to diagnose.
+    `references/simulation-and-results.md` documents the `ERROR`/`''` values, `scenarioRunStatusLabel`,
+    the extra `failuresReasoning[]`/`passesReasoning[]` fields, the ambiguity of the 1.4.1 signature, and
+    that a `500` on trigger is not always transient.
+  - **`commotion-improve-worker`** — Phase 1 must separate "failed" from "never evaluated" *before*
+    diagnosing, since a round spent on an unevaluated or mute-caller run moves a prompt at random.
+    `references/improvement-loop.md` gains a "the pass-rate must be measuring the worker" section:
+    compare only like denominators, and treat zero decided runs as a **blocked loop**, not a failure.
+  - **`commotion-quality-loop`** — Phase 3 gains a hard gate: require the decided-run count from
+    run-evals and **do not enter the improve loop when nothing was decided**, because iterating against a
+    score that cannot move burns every round. Phase 4's first branch stops on an unmeasured baseline. The
+    loop still sequences exactly the four specialists; `commotion-debug` appears only as a pointer inside
+    that caveat, explicitly marked as not part of the loop.
+  - **`commotion-generate-scenarios`** — Phase 2's "reuse an existing personality" advice now carries the
+    `voiceEnabled` check, since all ten dev3 personalities had it `false`; and
+    `references/scenarios-and-personalities.md` records that **`aiAgentId`, not `version`, is what binds a
+    scenario to a runnable target**, that a stale `aiAgentId` is the real cause of the `500` on trigger,
+    and that `PUT /scenario` silently ignores a changed `version`.
+- **Chat is honest about its weaker gate.** Simulations are voice-only, so a chat session gets full RCA
+  and the same edit mechanics but verifies via a `POST /aiworker/run` text spot-check, reported as
+  `repro: n/a (chat — text spot-check only)`. A text spot-check is not a reproduction and the skill says
+  so rather than implying the confidence a 3-of-4 simulation would carry.
+- **⚠ Security note the operator must resolve.** The Call Analyzer api key resolves at Kong to persona
+  `admin` with `allowed_orgs: []` / `allowed_workspaces: []` — unrestricted cross-tenant reads, including
+  unmasked transcripts and composed system prompts. Call Analyzer's own trust model treats `admin` as
+  internal-only, so tenant scoping is an open decision isolated in one seam on the MCP side
+  (`analyzer_shaping.enforce_scope`); the plane is meanwhile gated only by whether the key is configured.
+  Do not enable it beyond dev3 until that lands. Bumped to 1.5.0.
+
 ## 2026-07-27 — 1.4.1 — connector credentials are create-time only; cap simulations at 4 runs
 
 Two defects found live: a worker whose Gmail/Calendar connectors silently never registered, and

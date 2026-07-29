@@ -10,7 +10,7 @@ description: >-
   it against the worker". This is step 2 of the quality loop (create-worker → **generate-scenarios** →
   run-evals → improve-worker). Calls the dev3 backend through the thin Commotion MCP server (OAuth — no
   API key in the transcript).
-allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
+allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_request, mcp__commotion__commotion_schema, mcp__commotion__commotion_analyzer
 ---
 
 # Commotion: Generate Scenarios & Personalities
@@ -135,6 +135,15 @@ the frustrated/angry caller, the impatient interrupter, the code-switching (e.g.
 caller on a noisy line, the adversarial/jailbreak caller. Each persona is reusable across scenarios.
 
 - **Reuse** what's there first: `GET /personality` (filter by `gender`/`mood`/`voiceEnabled`/`searchText`).
+  **⚠ Check `voiceEnabled` on the record you pick — do not assume it.** Verified live 2026-07-28: **all
+  ten personalities on dev3 had `voiceEnabled: false`**, so reusing one silently produces a **mute
+  caller** — the simulation runs, bills real minutes, and every call comes back
+  `userTurnCount: 0` / `userAudioSeconds: 0.0` / `stopReason: user_idle_timeout` with the worker
+  politely greeting an empty line. The pass-rate from such a run is meaningless. If nothing on the list
+  is voice-enabled, **create one** (below) rather than reusing. Also note a personality's *name* may
+  describe a TTS voice (`Eleven_Flash_English`, `Cartesia_Flash_English`) rather than a caller behaviour
+  (`Angry`, `Frusted`, `2x Speaking`) — read `prompt`, `mood`, `interruptionLevel` and `voiceEnabled`,
+  never the name.
 - **AI-draft the persona prompt**: `POST /personality/prompt/generate` `{description}` → returns
   `{generatedPrompt}`. Edit it, then create the persona.
 - **Create**: `POST /personality` (`PersonalityRequest` — `name, gender` (MALE/FEMALE), `mood`
@@ -174,8 +183,21 @@ ways to create them — pick per goal, usually (a) for breadth + (b) for the pre
   aiAgentChannelType`). Use `complexity`/`pathType` codes from the dropdown-config. `userScript` is what
   the simulated caller says/shares; `scenarioGoal` is the pass criterion the evaluator checks.
 - **(c) From a real call** — `POST /scenario/generate-from-conversation` (`conversationId, aiWorkerId,
-  version, aiAgentChannelType`) turns a recorded interaction (e.g. a failure you saw in Observability)
-  into a regression scenario. Review and complete the generated fields.
+  version, aiAgentChannelType`) turns a recorded interaction into a regression scenario. Review and
+  complete the generated fields.
+  **Find the call worth converting with `commotion_analyzer`** — Call Analyzer is the observability
+  surface here, and this is the highest-value scenario source you have, because it is drawn from real
+  behaviour rather than imagination:
+  ```
+  commotion_analyzer { "path": "/api/calls?workerId=<worker-id>&limit=20" }   # ⚠ query BOTH <id> and <id>_<version>
+  commotion_analyzer { "path": "/api/reports/latest" }                        # the fleet's stop_reason / error-rate profile
+  ```
+  Pick the calls whose `stopReason` or transcript shows the behaviour you want to pin, read
+  `?fields=transcript` to get the caller's turns, and **copy them verbatim** — STT artifacts and garbled
+  words are frequently the trigger, so tidying them up produces a scenario that can't reproduce anything.
+  Endpoint map: `commotion-debug/references/call-analyzer-api.md`. (`conversationId` is a BE-side id, not
+  the Call Analyzer `callId` — bridge via `GET /conversation/worker-conversations?workerId=` matched on
+  `voiceInteractionId`; if that doesn't resolve, author the scenario manually via (b) from the transcript.)
 
 (Bulk CSV/Excel import also exists via `GET /scenario/import/csv|excel` → fill the file → `POST
 /scenario/bulk` — see the reference; reserve it for large hand-authored sets.)

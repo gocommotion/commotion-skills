@@ -10,7 +10,7 @@ description: >-
   generate-scenarios → **run-evals** → improve-worker). Needs scenarios to exist first
   (commotion-generate-scenarios). Calls the dev3 backend through the thin Commotion MCP server
   (OAuth — no API key in the transcript).
-allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
+allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_request, mcp__commotion__commotion_schema, mcp__commotion__commotion_analyzer
 ---
 
 # Commotion: Run Evals (Simulate + Score)
@@ -76,6 +76,13 @@ is the **same transport as `commotion-create-worker`**:
 - **`commotion_schema`** — a bundled request schema: `{ "schema_name": "RunScenariosRequest" }` → the
   JSON Schema with its `$defs`. Any component name in the live spec works. **Never invent a field that
   isn't in the schema.**
+- **`commotion_analyzer`** — one **GET** against the **Call Analyzer** plane: `{ "path": "/api/…" }` →
+  the same `{ "status", "body" }` shape. This is where the *actual calls* live. **A simulation is just a
+  real call with a robot caller**, so every scenario-run has a full transcript, per-turn latency, tool
+  calls with their results, and audio metrics waiting here — far richer than `evaluationReasoning` alone.
+  Use it in Phase 3 to confirm the runs really happened and in Phase 4 to explain *why* they failed.
+  ⚠ **Optional**: the MCP registers it only where the Call Analyzer key is configured. If it's absent,
+  say so once and fall back to `evaluationReasoning` — never block a run on it.
 
 **Auth is automatic — there is no key.** The MCP client owns OAuth: the first time the
 Commotion MCP is used it opens a Commotion login in the browser, then attaches the user's token to
@@ -89,7 +96,10 @@ call's `path`.
 
 The endpoint map is in `commotion-generate-scenarios/references/eval-domain-api.md` (the canonical
 map). Eval-metric design is in `references/eval-metrics.md`; the run lifecycle + how to read scores is
-in `references/simulation-and-results.md`.
+in `references/simulation-and-results.md`. The Call Analyzer endpoint map — what each `?fields=` section
+returns, payload sizes, and the gotchas — is
+`commotion-debug/references/call-analyzer-api.md` (canonical for that plane; read it before your first
+`commotion_analyzer` call).
 
 **Execution rules:** one phase at a time; read the reference a phase names before acting; show every
 write before making it; **never start a run while another is active** (Phase 2).
@@ -208,13 +218,102 @@ run returns `100.0`). Report it with the raw count (e.g. "6 of 10 passed = 60%")
 scenario-goal PASS/FAIL is the signal that drives `passRate`.) A simulation runs scenarios
 sequentially — expect it to take a while (voice sims run real audio); poll at a sensible interval.
 
+> ## ⚠ Before you report `passRate`, check that the runs were actually evaluated (verified live)
+>
+> `passRate` is `passCount / totalScenarios` — and a run that the **evaluator failed to score** counts as
+> a non-pass. So a `0.0` can mean "the worker failed everything" **or** "nothing was scored", and those
+> demand opposite responses. Verified live 2026-07-28: across 8 runs on a deliberately broken worker,
+> **0 produced a usable verdict** — they came back with `scenarioEvaluationResult` of **`ERROR`** or an
+> **empty string** and `scenarioRunStatusLabel` of `Evaluation Error` / `Simulation Error`, on calls that
+> had run 40–60 seconds with complete transcripts. One observed cause is an evaluator-side bug:
+> *"Goal completion evaluation failed: 3 validation errors for EvaluationMessage … `channel_types.0`
+> Input should be 'voice' or 'chat' [input_value='customer']"*.
+>
+> So always split the denominator in Phase 4 and **report `passRate` alongside how many runs were
+> decided** — "0% (0 of 4 runs evaluated — evaluator errors, score not meaningful)" is the honest
+> reading, and it is a very different handoff to `commotion-improve-worker` than "0% (4 of 4 failed)".
+> Reporting a bare `0.0` from unevaluated runs sends the improve loop chasing a defect that may not exist.
+> To recover the real verdicts, read the transcripts — `commotion-debug` does this through Call Analyzer
+> (`/api/calls?requestId=<scenario-run-id>` → `?fields=transcript,metrics`); see
+> `commotion-debug/references/repro-and-gates.md` §1a.
+
 ## Phase 4 — Per-scenario breakdown (the diagnosis fuel)
 
 Call `commotion_request` `{ "method": "GET", "path": "/scenario-run?simulationId=<sim-id>" }` and read
-the per-scenario records from `body`. Each `ScenarioRunResponse` gives `status`, `quality`,
-`scenarioEvaluationResult` (pass/fail), and — for failures — `failureReason` + `evaluationReasoning`.
-Present a table: scenario name · pass/fail · why-it-failed. **This is exactly what
-`commotion-improve-worker` consumes** to decide what to fix.
+the per-scenario records from `body`. Each `ScenarioRunResponse` gives `status`,
+`scenarioRunStatusLabel`, `quality`, `scenarioEvaluationResult`, and — for failures — `failureReason` +
+`evaluationReasoning` (plus `failuresReasoning[]` / `passesReasoning[]`).
+
+**Bucket every run into one of three, and never collapse them:**
+
+| Bucket | How to tell | Report as |
+|---|---|---|
+| **Pass** | `scenarioEvaluationResult == "PASS"` | a pass |
+| **Fail** | `scenarioEvaluationResult == "FAIL"` — a real behavioural verdict with `evaluationReasoning` | a fail, with the reason |
+| **Not evaluated** | `scenarioEvaluationResult` is **`ERROR`** or **`''`**, or `scenarioRunStatusLabel` is `Evaluation Error` / `Simulation Error` | **excluded from the pass-rate** — say how many and why |
+
+⚠ `status: COMPLETED` does **not** mean a run was evaluated (verified live: `COMPLETED` +
+`Evaluation Error` + `ERROR` on a 55-second call). And a mute-caller run — `audioMetrics.userTurnCount: 0`
+with `stopReason: user_idle_timeout` — is not a behavioural fail either; it means the personality wasn't
+voice-enabled and the scenario never ran (see `commotion-generate-scenarios` Phase 2).
+
+Present a table: scenario name · pass/fail/not-evaluated · why. **This is exactly what
+`commotion-improve-worker` consumes** to decide what to fix — so a not-evaluated run must reach it
+labelled as such, never as a failure to diagnose.
+
+### Then read the actual calls — `evaluationReasoning` is an opinion, the call is the evidence
+
+Every scenario-run produced a real call, and **the scenario-run `id` is that call's `requestId`**. So for
+each failing (or not-evaluated) run:
+
+```
+commotion_analyzer { "path": "/api/calls?requestId=<scenario-run-id>&limit=1" }        → the callId
+commotion_analyzer { "path": "/api/call/<call-id>?fields=transcript,metrics,analysis" } → ~12 KB
+```
+
+Read four things the eval surface cannot tell you, and fold them into the "why" column:
+
+| Question | Where |
+|---|---|
+| **Did the run actually happen?** `userTurnCount: 0` / `userAudioSeconds: 0.0` = mute caller, the scenario never ran | `audioMetrics` |
+| **Did the tools fire, and what came back?** An empty `toolCallMetrics` when the flow needed a tool, or a `result` like `"Error: function 'x' is not registered."`, changes the diagnosis completely | `toolCallMetrics[]` |
+| **Was "slow" real, and slow where?** A slow *tool* and a slow *model* need opposite fixes | `latencyMetrics.summary`, `toolCallMetrics[].latency_seconds` |
+| **Was this the worker's fault at all?** `contextCorruption.detected`, `llmFallbackEvents`, `state_load_errors` mark platform artifacts | `analysis` section, `config` section |
+| **Why did the run end that way?** the only place that answers it | `/logs?session_id=<scenario-run-id>&level=error` — see below |
+
+**For any `stopReason` you can't explain — and for every config or startup fault — read the error logs.**
+This is the single highest-value query on the plane and it is cheap when scoped:
+
+```
+commotion_analyzer { "path": "/api/call/<call-id>/logs?session_id=<scenario-run-id>&level=error
+                              &start=<createdAt − duration − 90s>&end=<createdAt + 90s>" }
+```
+
+~3 rows / 2 KB versus 1488 rows / 985 KB unfiltered. Escalate by level only as needed —
+`level=error` → `warning` → `info` — and **never `level=debug` without a `filter`**.
+
+⚠ Two things that will otherwise waste the query. **`session_id` is the session id, and for a scenario-run
+that is the run's own `id`** — the same value the call carries as `requestId`, which is why the join works
+in both directions. (For a chat session use `/api/chat/session/<sessionId>/logs`, where the scope *and* the
+window are automatic — but note a `filter=` there silently drops the scoping unless you include the session
+id in the filter chain.) And **`createdAt` is not the call start** — verified live, it sat 42 s *after* the
+first log line and the config load precedes it, so weight the window backwards as shown.
+
+Two payoffs specific to a failing scenario-run: a `pipeline_error` decomposes into *"silent LLM response"*
+→ *"**no fallback services available**"* → fatal — a **worker config gap** (no fallback model), not a
+platform fault, and invisible in every other field. And
+`level=debug&filter=|~:tools configured|No .* configured` prints the tool inventory at call setup, so a
+prompt referencing an unwired tool is provable before the conversation even starts. Full technique, the
+module map, and the `/logs/labels` trap: `commotion-debug/references/call-analyzer-api.md`.
+
+This is what makes the handoff to `commotion-improve-worker` actionable: "failed the goal" sends it
+guessing at the prompt; "called `get_policy_status`, got `not registered`, then asserted the answer
+anyway" names the fix. The failure classes and the platform-artifact signature table are in
+`commotion-debug/references/rca-taxonomy.md` — the same taxonomy applies to a scenario-run as to a
+production call.
+
+⚠ Some signals exist **only** in the transcript, never in `evaluationReasoning` — a mispronunciation, for
+instance, shows up as the tester bot mis-hearing a term. That is precisely why this step exists.
 
 If you defined metrics (Phase 1) and want their per-call scores (or to populate the Evals dashboard),
 note metric evaluation is **async** (verified live): the sim's calls come back as eval-results in

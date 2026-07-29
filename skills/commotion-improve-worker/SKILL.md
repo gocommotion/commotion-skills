@@ -10,7 +10,7 @@ description: >-
   This is step 4 of the quality loop (create-worker → generate-scenarios → run-evals →
   **improve-worker**) and owns the loop. Calls the dev3 backend through the thin Commotion MCP server
   (OAuth — no API key in the transcript).
-allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
+allowed-tools: Read, AskUserQuestion, mcp__commotion__commotion_request, mcp__commotion__commotion_schema, mcp__commotion__commotion_analyzer
 ---
 
 # Commotion: Improve a Worker (the quality loop)
@@ -70,6 +70,11 @@ server (two tools, no scripts, no keys), one unified backend:
 - **`commotion_schema`** — a bundled request schema: `{ "schema_name": "AiWorkerRequest" }` → the JSON
   Schema with its `$defs`. Any component name in the live spec works. **Never invent a field that isn't
   in the schema.**
+- **`commotion_analyzer`** — one **GET** against the **Call Analyzer** plane: `{ "path": "/api/…" }` →
+  the same `{ "status", "body" }` shape. Your diagnosis quality is capped by your evidence, and
+  `evaluationReasoning` is the evaluator's *opinion* of a call; this is the call. Several rows of the
+  taxonomy below are only **provable** here. ⚠ **Optional** — registered only where the Call Analyzer key
+  is configured; if absent, say so once and diagnose from `evaluationReasoning` alone.
 
 **Auth is automatic — there is no key.** The MCP client owns OAuth: the first time the
 Commotion MCP is used it opens a Commotion login in the browser, then attaches the user's token to
@@ -91,6 +96,10 @@ References this skill leans on:
   `…/control-and-reliability.md` (guardrails, fallback), `…/tools-and-capabilities.md` (wire tools),
   `…/knowledge-and-rag.md` (attach knowledge).
 - Reading scores + failures: `commotion-run-evals/references/simulation-and-results.md`.
+- The Call Analyzer plane (what each `?fields=` section returns, sizes, gotchas):
+  `commotion-debug/references/call-analyzer-api.md`; the failure classes and the
+  platform-artifact signature table: `commotion-debug/references/rca-taxonomy.md`. Both apply to a
+  scenario-run exactly as to a production call — a simulation *is* a real call with a robot caller.
 
 **Execution rules:** one phase at a time; **never deploy inside the loop**; show every edit before
 making it; one round = diagnose → edit draft → re-run → compare.
@@ -113,20 +122,57 @@ Read the current run's failing scenarios: `commotion_request` `{ "method": "GET"
 "/scenario-run?simulationId=<sim-id>" }` → for each failing run in the result `body`, read
 `failureReason` + `evaluationReasoning`.
 
+> ⚠ **First separate "failed" from "never evaluated" — most of the loop's wasted rounds start here**
+> (verified live 2026-07-28). A run whose `scenarioEvaluationResult` is **`ERROR`** or **`''`**, or whose
+> `scenarioRunStatusLabel` is `Evaluation Error` / `Simulation Error`, carries **no verdict** — the
+> evaluator crashed, often on a call that ran fine. In one session **0 of 8 runs** returned a usable
+> verdict, and the resulting `passRate 0.0` looked exactly like total failure. Likewise a run with
+> `audioMetrics.userTurnCount: 0` / `stopReason: user_idle_timeout` had a **mute simulated caller** (a
+> personality with `voiceEnabled: false`) and never exercised the worker at all.
+>
+> **Never diagnose or edit against either.** There is nothing in the worker to fix, so a round spent on
+> one is a round spent moving a prompt at random. Exclude them from the pass-rate, say how many were
+> decided, and if *none* were, stop and report the harness problem instead of iterating — a threshold
+> loop cannot converge on a score that isn't measuring the worker. `commotion-run-evals` Phase 4 has the
+> bucketing table; to recover real verdicts from the transcripts, use `commotion-debug` (it reads Call
+> Analyzer directly).
+
 Classify each failure and map it to a fix (the **failure → fix taxonomy** — full version in
 `references/improvement-loop.md`):
 
-| Failure pattern (from `evaluationReasoning`) | Fix | Where |
-|---|---|---|
-| Agent missed a step / wrong flow / wrong tone | Edit the agent **`instructions`** | agents-and-orchestration.md |
-| Asserted a backend fact it never fetched (hallucination) | Add/strengthen the **grounding rule**; wire the API as a **tool** | agents + tools-and-capabilities.md |
-| "Called an API" but nothing happened / looped | **Register the API as a tool**, reference `[tool:<action>]` | tools-and-capabilities.md |
-| Couldn't answer from source material | **Attach + index knowledge**, bind it in the prompt | knowledge-and-rag.md |
-| Flipped language on English-spoken digits | Add the **don't-switch-on-digits** prompt rule | aiworker-lifecycle.md |
-| Over-blocked a legitimate request / under-blocked a bad one | Tune **guardrails** (toxicity category toggles, forbidden-word groups, custom checks, advanced safety) | control-and-reliability.md |
-| Re-asked for info already given / looped | Add the **anti-repetition / call-once** prompt rules | agents-and-orchestration.md |
+| Failure pattern (from `evaluationReasoning`) | What **proves** it (Call Analyzer) | Fix | Where |
+|---|---|---|---|
+| Agent missed a step / wrong flow / wrong tone | the `transcription[]` turns themselves | Edit the agent **`instructions`** | agents-and-orchestration.md |
+| Asserted a backend fact it never fetched (hallucination) | `toolCallMetrics[]` **empty**, or its `result` is an error, while the transcript states the fact as certain | Add/strengthen the **grounding rule**; wire the API as a **tool** | agents + tools-and-capabilities.md |
+| "Called an API" but nothing happened / looped | `toolCallMetrics[].result == "Error: function '<name>' is not registered."`, or `[tool:<name>]` in the prompt with no match in `callMetadata.registered_tools` | **Register the API as a tool**, reference `[tool:<action>]` | tools-and-capabilities.md |
+| Couldn't answer from source material | no knowledge grounding in `context[]`; nothing retrieved | **Attach + index knowledge**, bind it in the prompt | knowledge-and-rag.md |
+| Flipped language on English-spoken digits | the switch is visible turn-by-turn; `sessionState.language` | Add the **don't-switch-on-digits** prompt rule | aiworker-lifecycle.md |
+| Over-blocked a legitimate request / under-blocked a bad one | the interception in the transcript (⚠ a guardrail block can surface as a generic `FAILED`) | Tune **guardrails** (toxicity category toggles, forbidden-word groups, custom checks, advanced safety) | control-and-reliability.md |
+| Re-asked for info already given / looped | repeated near-identical `assistant` turns — **but check `contextCorruption.detected` first** | Add the **anti-repetition / call-once** prompt rules | agents-and-orchestration.md |
+| Mispronounced a term | **only** in the transcript — the tester bot mis-heard the word the worker said | **Pronunciation dictionary** (`ALIAS`) | settings-variables-pronunciation.md |
+| "Too slow" | `latencyMetrics.summary` vs `toolCallMetrics[].latency_seconds` — a slow *tool* and a slow *model* need opposite fixes | depends: tool/upstream, or model + prompt length | tools-and-capabilities.md |
+| Talked over the caller / long silences | `turnTimeline[]` overlap, `audioMetrics.silenceRatioPercent` / `botRatioPercent` | barge-in / VAD + speaking-plan config, not prompt prose | control-and-reliability.md |
+| Call terminated mid-conversation (`pipeline_error`, unexplained `stopReason`) | **the error logs** — `/logs?session_id=<scenario-run-id>&level=error`. Verified live, this decomposes into `[ALERT] Silent LLM response` → **`No fallback services available`** → fatal: a **missing fallback model**, which nothing else reveals | Configure a **fallback model** | control-and-reliability.md |
+| **Not the worker at all** | `contextCorruption.detected`, `llmFallbackEvents` with `fallbackSucceeded: true`, `state_load_errors`, `audioLossPercent`, mute caller | **nothing** — report it | `commotion-debug/references/rca-taxonomy.md` §2 |
 
-Prioritize the fixes that clear the most failing scenarios. Present the diagnosis to the user.
+To fill that middle column, pull each failing run's call — the scenario-run `id` **is** the call's
+`requestId`:
+
+```
+commotion_analyzer { "path": "/api/calls?requestId=<scenario-run-id>&limit=1" }         → the callId
+commotion_analyzer { "path": "/api/call/<call-id>?fields=transcript,metrics,analysis" }  → ~12 KB
+```
+
+(Add `?fields=config` separately — it is ~41 KB on its own — when you need `context[]` or
+`registered_tools`. Never request all five sections at once; that gets truncated.)
+
+**Classify before you edit.** The last row is the one that costs rounds: a platform artifact
+prompt-fixed is a wasted round *and* a false fix. The full signature table is
+`commotion-debug/references/rca-taxonomy.md` §2 — the same taxonomy applies to a scenario-run as to a
+production call.
+
+Prioritize the fixes that clear the most failing scenarios. Present the diagnosis to the user, quoting
+the evidence — the turn, the tool `result`, the metric value — not a paraphrase.
 
 ## Phase 2 — Edit on a DRAFT (never on live)
 
@@ -164,6 +210,21 @@ Apply the diagnosed fixes using the **create-worker machinery** (don't reinvent 
   Hindi mid-call and stay in Hindi on English-spelled emails.
 - **Agent type change** (e.g. CHAT_AGENT→VOICE_AGENT) → **delete the agent and re-POST** it with the
   new `agentType`. A `PUT` that changes the type is rejected: *"Cannot change agent type…"*.
+
+> ⚠ **After any delete + re-POST, re-point your scenarios or Phase 3 cannot even start** (verified live
+> 2026-07-28). The re-POST assigns a **new `aiAgentId`**, and every scenario still stores the old one, so
+> `POST /simulation/run` returns `500 Simulation trigger failed. Please try again.` — indistinguishable
+> from the known transient flake, and retrying never clears it. Fix: read the new id from
+> `GET /aiagent?workerId=<worker-id>&version=<draft-version>`, compare it to each scenario's `aiAgentId`
+> (`GET /scenario/<id>`), and `PUT /scenario/<id>` with the new value (full replace — resend the fields
+> you keep). Note `PUT /scenario` **silently ignores a changed `version`**; `aiAgentId` is what actually
+> binds a scenario to the version under test.
+>
+> Re-confirmed live while re-POSTing: `POST /aiagent` **requires `agentType`** (400 *"Agent creation
+> failed: agentType is required."*), and you read it back as **`aiAgentType`** — the `agentType` key
+> itself is `null` in every response. `DELETE /aiagent/{id}` needs `?version=`. Both are already spelled
+> out in `commotion-create-worker/references/agents-and-orchestration.md`; the new part is only that a
+> re-POST inside *this* loop invalidates the scenarios.
 
 **Show every edit before making it.** Make the smallest set of changes that addresses the round's
 failures (so you can attribute the pass-rate change to them — see the regression guard).

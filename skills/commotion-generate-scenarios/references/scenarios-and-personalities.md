@@ -98,7 +98,7 @@ version`). Reserve this for large sets — for a handful of edge cases, plain `P
 |---|---|
 | `name`, `gender`, `mood` | persona identity + emotional state (drives behaviour) |
 | `prompt` | natural-language behaviour spec — AI-draft it via `POST /personality/prompt/generate` `{description}` → `{generatedPrompt}`, then edit |
-| `voiceEnabled` | `true` to give the simulated caller a real TTS voice (needed for voice simulations) |
+| `voiceEnabled` | `true` to give the simulated caller a real TTS voice — **required for voice simulations, and not the default.** ⚠ Verified live 2026-07-28: all ten pre-existing dev3 personalities had `voiceEnabled: false`, and reusing one produced four 55-second calls in which the caller never spoke (`userTurnCount: 0`, `userAudioSeconds: 0.0`, `stopReason: user_idle_timeout`). The sim "completes" and the pass-rate is meaningless. Always read this field off the record you reuse |
 | `voiceProvider`, `voiceModel`, `voiceId`, `voiceProviderCredentialId`, `languages` | the caller's voice (codes from `GET /aimodel`; mirror the worker's voice domain) |
 | `interruptionLevel`, `speakingSpeed` | conversational realism (interrupts, pace) |
 | `backgroundNoise` / `backgroundNoiseFileIdentifier` / `backgroundNoiseFileName` / `backgroundNoiseIntensity` | ambient noise to stress audio handling |
@@ -119,3 +119,15 @@ same scenario with different personas is how you stress edge cases.
   worker `version`, and a **draft version of an already-live worker can be simulated** (so the
   draft-only improve loop works). When you mint a new draft version to improve on, create/point the
   test-set scenarios at that draft version and run against it.
+- **⚠ `aiAgentId` — not `version` — is what actually binds a scenario to a runnable target** (verified
+  live 2026-07-28). Two consequences:
+  - A scenario whose `aiAgentId` points at a **deleted** agent makes every
+    `POST /simulation/run` fail with `500 "Simulation trigger failed. Please try again."` — which is
+    indistinguishable from the known transient flake, and retrying never clears it. This happens
+    routinely in the improve/debug loops, because the prompt-edit path is **delete the agent +
+    re-POST**, and the re-POST mints a **new `aiAgentId`**. After any such edit, re-read
+    `GET /aiagent?workerId=<id>&version=<draft>` and `PUT /scenario/<id>` with the new `aiAgentId`
+    (full replace — resend the fields you keep).
+  - **`PUT /scenario` silently ignores a changed `version`** — it accepted `version: 1` and kept
+    reporting `version: 0`, yet the simulation then ran correctly at v1. So don't rely on a scenario's
+    stored `version` to retarget it; re-point `aiAgentId` instead.
