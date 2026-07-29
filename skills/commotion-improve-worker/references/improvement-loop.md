@@ -26,6 +26,24 @@ never-deployed worker returns *"Worker is not available"*).
    (new failing scenarios drive the next round).
 3. Otherwise (no rounds left, or no improvement, or a regression) → **stop and report**.
 
+## The pass-rate must be measuring the worker (check before every round)
+
+`passRate` is `passCount / totalScenarios`, so a run the **evaluator never scored** is counted as a
+non-pass and silently drags the rate down. Before treating a rate as a signal, confirm the runs behind it
+were decided — `scenarioEvaluationResult` of `PASS`/`FAIL`, not `ERROR` or `''`, and
+`scenarioRunStatusLabel` not `Evaluation Error` / `Simulation Error`. Verified live 2026-07-28: **0 of 8
+runs** were decided, producing a `passRate 0.0` indistinguishable from total failure.
+
+Consequences for loop control:
+
+- **Compare like with like.** A round-over-round delta is only meaningful if both rounds had a similar
+  number of decided runs. Two rates built on different denominators are not comparable, and "improved vs
+  the previous round" (rule 2 above) can be pure evaluator noise.
+- **Zero decided runs is not a failure — it is a blocked loop.** Stop and report the harness problem.
+  Iterating against an unmeasured score burns `maxRounds` and can leave the worker worse than it started.
+- **A mute-caller round is also undecided** — `audioMetrics.userTurnCount: 0` with
+  `stopReason: user_idle_timeout` means the personality wasn't `voiceEnabled`, so the scenario never ran.
+
 ## Regression guard
 
 A round's edits must not lower the pass-rate. If a re-run comes back **worse** than the prior round:

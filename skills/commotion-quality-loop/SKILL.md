@@ -108,8 +108,37 @@ Invoke the **`commotion-run-evals`** skill to run the scenarios as a simulation 
 the `passRate`, and the per-scenario failures (the diagnosis fuel). Report the baseline vs the
 threshold.
 
+> ## ⛔ Gate the whole loop on the baseline being *measured* (verified live)
+>
+> This skill's entire control flow is a comparison against `passRate`, so it fails hardest when that
+> number isn't measuring the worker. Two ways it isn't, both seen live on dev3 2026-07-28:
+>
+> - **The evaluator produced no verdict.** `scenarioEvaluationResult` comes back `ERROR` or `''` with
+>   `scenarioRunStatusLabel` of `Evaluation Error` / `Simulation Error`. Observed: **0 of 8 runs decided**,
+>   yielding `passRate 0.0` on calls that had run 40–60s perfectly well.
+> - **The simulated caller was mute.** `audioMetrics.userTurnCount: 0` and
+>   `stopReason: user_idle_timeout`, because the personality had `voiceEnabled: false`.
+>
+> So before Phase 4, require from `commotion-run-evals` **how many runs were decided**, not just the rate.
+> If **none** were, **do not enter the improve loop** — it would iterate against a score that cannot move,
+> burning every round and possibly leaving the worker worse. Report the harness problem and stop: fix the
+> personality (`commotion-generate-scenarios` Phase 2) or escalate the evaluator bug. If only *some* were
+> decided, say so in the baseline and treat round-over-round deltas with matching caution — two rates on
+> different denominators are not comparable.
+>
+> **The specialists read the calls, not just the scores.** Both `commotion-run-evals` and
+> `commotion-improve-worker` now pull each failing scenario-run's actual call from **Call Analyzer** (a
+> simulation is just a real call with a robot caller), so the failures they hand back should already name
+> the evidence — the tool that errored, the fabricated turn, the mute caller — rather than only the
+> evaluator's opinion. If a round comes back with bare "failed the goal" reasons, ask for that evidence
+> before spending the next round on a guess. When the evaluator is the thing that's broken,
+> `commotion-debug` is the specialist that works purely from the calls. It is not a phase of this loop,
+> but it is the tool that can tell you whether a `0.0` means
+> "broken worker" or "broken evaluator".
+
 ## Phase 4 — Improve loop (the core)
 
+- If the baseline was **not measured** (no decided runs) → **stop**, per the gate above. Do not iterate.
 - If **baseline `passRate` ≥ threshold** → skip to Phase 5 (already meets the bar).
 - Else → invoke the **`commotion-improve-worker`** skill, passing the worker id, the baseline
   `SIM_ID`, the **threshold**, and **max rounds**. It owns the round-by-round mechanic — diagnose the

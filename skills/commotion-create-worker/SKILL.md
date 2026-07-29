@@ -11,7 +11,7 @@ description: >-
   "worker". Handles the dev3 lifecycle (draft↔live versions, single vs multi-agent, enabling the
   agent, the voice/language schema). Calls the dev3 backend through the thin Commotion MCP server
   (OAuth — no API key in the transcript).
-allowed-tools: Read, AskUserQuestion, Bash, Skill, mcp__commotion__commotion_request, mcp__commotion__commotion_schema
+allowed-tools: Read, AskUserQuestion, Bash, Skill, mcp__commotion__commotion_request, mcp__commotion__commotion_schema, mcp__commotion__commotion_analyzer
 ---
 
 # Commotion: Create a Worker
@@ -512,6 +512,24 @@ the body can contain raw newlines; the endpoint is occasionally flaky, so retry 
 scenarios that exercise the **branches and the failure paths**, not just the happy greeting. Watch
 for the agent **asserting backend facts it never fetched** (the #1 failure) — if it invents
 data, tighten the grounding rule (Phase 3) and/or wire the tools (Phase 8), redeploy, and re-test.
+
+**Then read the spot-check back in Call Analyzer** — the reply text alone hides the thing you most need
+to see. Each `/aiworker/run` session appears as a `COPILOT` session:
+
+```
+commotion_analyzer { "path": "/api/chat/sessions?workerId=<worker-id>&limit=5" }   # find the session
+commotion_analyzer { "path": "/api/chat/session/<session-id>" }                     # runs, errors[], perf
+```
+
+The payoff: **`toolCallMetrics` / `registered_tools` prove whether the tools you wired in Phase 8
+actually fired**, and a `[tool:<name>]` in your prompt with no matching entry in `registered_tools` is a
+**dangling reference** — at runtime it returns `"Error: function '<name>' is not registered."` and the
+agent will often fabricate an answer rather than admit the failure. That is exactly the #1 failure above,
+and it is invisible in the reply text but obvious here. Endpoint map:
+`commotion-debug/references/call-analyzer-api.md`. (For a **voice** worker use the voice surface instead:
+`/api/calls?workerId=<worker-id>` then `/api/call/<id>?fields=transcript,metrics` — and query both the
+bare `<worker-id>` and `<worker-id>_<version>` forms.) ⚠ `commotion_analyzer` is optional — skip this if
+it isn't connected.
 Editing the live worker means revert-to-draft → edit the agent at the new draft version → redeploy
 (see `references/aiworker-lifecycle.md`).
 

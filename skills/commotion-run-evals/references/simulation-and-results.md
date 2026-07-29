@@ -52,17 +52,43 @@ these from `body`:
 genuine voice run takes minutes (several PENDING polls). The `/simulation/run` path is also
 **occasionally flaky** (same generic error) — retry a transient failure once.
 
+**⚠ But that signature is ambiguous — do not read it as "the runs didn't happen" on its own**
+(verified live 2026-07-28). A simulation reported `COMPLETED`, `passRate 0.0`, `avgLatencyInMillis: null`
+while **all four of its calls existed** with 42–57-second durations and full transcripts: the number was
+`0.0` only because nothing could be *evaluated*. Discriminate on the **per-run `duration`** — near-zero
+means the runs really didn't happen; 40–60s means they ran and the evaluator failed (see below).
+
+**⚠ A `500 Simulation trigger failed. Please try again.` is not always transient.** If the worker's agent
+was deleted and re-POSTed (the prompt-edit path), the scenario still stores the **old `aiAgentId`** and
+every trigger will 500 until the scenario is re-pointed. Check
+`GET /scenario/<id>` → `aiAgentId` against `GET /aiagent?workerId=…&version=…` before retrying.
+
 ## Per-scenario breakdown (the diagnosis fuel)
 
 Call `commotion_request` `{ "method": "GET", "path": "/scenario-run?simulationId=<sim-id>" }` and read
 the records from `body`.
 
 `ScenarioRunResponse`: `status` (QUEUED→RUNNING→COMPLETED→EVALUATION_*→FAILED), `scenarioEvaluationResult`
-(PASS/FAIL), `quality`, `evaluationReasoning` (**the richest field — the evaluator's turn-by-turn
-justification; this is what improve-worker reads**), `failureReason` (backend error text when a run
-failed). It does **not** expose a `sessionId`/`callId` field — **but the scenario-run `id` IS the
-call's `sessionId`** (verified: run id == the SIMULATION conversation's sessionId), which is how you
+(PASS/FAIL — **and also `ERROR` or `''`**, see below), `quality`, `evaluationReasoning` (**the richest
+field — the evaluator's turn-by-turn justification; this is what improve-worker reads**), `failureReason`
+(backend error text when a run failed), plus `scenarioRunStatusLabel`, `failuresReasoning[]` and
+`passesReasoning[]`. It does **not** expose a `sessionId`/`callId` field — **but the scenario-run `id` IS
+the call's `sessionId`** (verified: run id == the SIMULATION conversation's sessionId), which is how you
 reach the eval-metric results below.
+
+**⚠ The evaluator often returns no verdict at all (verified live 2026-07-28: 0 of 8 runs decided).**
+`scenarioEvaluationResult` is not limited to PASS/FAIL — it also comes back as **`ERROR`** or an **empty
+string**, with `scenarioRunStatusLabel` of `Evaluation Error` or `Simulation Error`, on calls that ran
+40–60 seconds with complete transcripts. One observed cause is an evaluator-side bug:
+*"Goal completion evaluation failed: 3 validation errors for EvaluationMessage …
+`channel_types.0` Input should be 'voice' or 'chat' [input_value='customer']"*.
+
+So `status: COMPLETED` does **not** mean the run was evaluated, and `passRate`/`passCount` can be `0`
+purely because nothing scored. **Exclude no-verdict runs from any pass-rate you report**, say how many
+were decided (`n of 4 decided`), and get the missing verdicts from the transcript — `commotion-debug`
+does this via Call Analyzer (`/api/calls?requestId=<scenario-run-id>` → `?fields=transcript,metrics`);
+see `commotion-debug/references/repro-and-gates.md` §1a. Reporting a `0.0` pass-rate that is really
+"unevaluated" will send an improvement loop chasing a defect that may not exist.
 
 ## Reading a run for settings signals (not only prompt fixes)
 
