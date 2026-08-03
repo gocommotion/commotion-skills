@@ -5,9 +5,17 @@ How a simulation runs and how to read results (`/simulation`, `/scenario-run`, `
 
 ## Hard prerequisites (verified live)
 
-- **Simulations only work for VOICE workers.** A chat worker fails every run with a generic *"An error
-  has occurred during simulation. Please contact support with reference number …"* (quality/latency
-  null, `passRate` 0). Personalities must be `voiceEnabled:true` with a voice.
+- **Every channel simulates through the same endpoint.** `POST /simulation/run` serves VOICE, CHAT and
+  STRUCTURED_OUTPUT workers; the channel is carried by each **scenario's `aiAgentChannelType`**
+  (`VOICE`/`CHAT`), and an all-chat batch echoes **`onlyChatScenarios: true`**. Verified live
+  2026-08-03: chat worker → `passRate 100.0`; `STRUCTURED_OUTPUT` worker → `PASS`. A `STRUCTURED_OUTPUT`
+  agent sits on the **CHAT** channel. Personalities must be `voiceEnabled: true` **for voice scenarios
+  only** — for chat/SO, `voiceEnabled: false` is correct.
+- **A generic *"An error has occurred during simulation…"* is not a channel verdict.** It arrives with
+  `duration 0.0` / `Simulation Error` and hides the real cause. Read the run's own session before
+  concluding: `/api/chat/session/<scenario-run-id>` (chat/SO) → `errors[]`, or
+  `/api/calls?requestId=<scenario-run-id>` (voice). One verified cause was a worker LLM credential
+  fault (`litellm.AuthenticationError: Incorrect API key provided`), not the channel.
 - **The worker must have a live runtime** (deployed at least once). A never-deployed worker →
   `/aiworker/run` returns *"Worker is not available for worker Id: …"* and sims fail. **A draft version
   of an already-live worker CAN be simulated** (verified: draft v1 ran while v0 was live) — this is
@@ -21,7 +29,11 @@ How a simulation runs and how to read results (`/simulation`, `/scenario-run`, `
 | `scenarioIdToRunPerScenarioMap` | `{scenarioId: nRuns}` — run a scenario N times for consistency. Total ≤ `maxScenarioRunLimit` (20), **but keep it ≤4 per sim** — see batch note below |
 | `maxDuration` | per-scenario cap in seconds (voice) — e.g. 300 |
 | `maxTurns` | per-scenario cap on turns — e.g. 20 |
-| `llm` | simulator LLM (`{provider,model}`) — codes from `/aimodel`. **Optional**; omit to use the platform default simulator |
+| `llm` | simulator LLM (`{provider,model,voiceProviderCredentialId,reasoningEnabled}`) — codes from `/aimodel`. **Optional**; omit to use the platform default simulator (both verified passing runs omitted it). If you do set it, keep it a **`commotion` provider** — a non-Commotion provider needs a `voiceProviderCredentialId` you cannot obtain over the API (see `commotion-create-worker/references/aiworker-lifecycle.md`, "Providers and credentials") |
+
+There is **no channel field on this request** — the channel is decided per scenario by
+`aiAgentChannelType`. Mixing voice and chat scenarios in one batch is therefore possible; keep batches
+single-channel so `onlyChatScenarios` and the failure signatures stay unambiguous.
 
 Returns `SimulationResponse` with `id` (the `<sim-id>`, read from `body`) and `scenarioRunIds`. **One
 sim at a time** — check `GET /scenario-run/active?aiWorkerId=` first (starting a second while one is
