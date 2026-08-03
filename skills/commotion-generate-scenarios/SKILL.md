@@ -42,14 +42,17 @@ them as a simulation and reports the pass-rate. The whole loop runs against a sp
 
 ## Prerequisites (verified live — the test set is only runnable if these hold)
 
-- **The worker must be VOICE-enabled.** Simulations/evals only run on voice workers (a chat worker
-  fails every run). So build the test set for a voice worker; if the target is chat, enable voice first
-  (see `commotion-create-worker`; voice can be turned on via a draft).
+- **Any channel works — voice, chat, or structured output.** All three simulate through the same
+  `POST /simulation/run`; set each scenario's `aiAgentChannelType` to match the agent (`VOICE` for
+  `VOICE_AGENT`, **`CHAT` for both `CHAT_AGENT` and `STRUCTURED_OUTPUT`**). Verified live 2026-08-03:
+  chat worker → `passRate 100.0`, SO worker → `PASS`. Do **not** convert a chat worker to voice just to
+  test it, and do not fall back to a live `/aiworker/run` session for chat/SO.
 - **The worker must have been deployed (live) at least once.** AI scenario-generation and simulation
   both need a live runtime — for a **never-deployed** worker, `POST /scenario/generate` produces
   **nothing** and sims fail with *"Worker is not available"*. (A draft *version* of an already-live
-  worker is fine.)
-- **Personalities must be voice-enabled** (`voiceEnabled:true` + a voice) to drive voice simulations.
+  worker is fine.) This — not the channel — is the real prerequisite.
+- **Personalities must be voice-enabled** (`voiceEnabled:true` + a voice) to drive **voice** simulations;
+  for **chat/SO** scenarios `voiceEnabled:false` is correct and sufficient.
 
 ## When to use this
 
@@ -117,8 +120,10 @@ The whole test set is scoped to **one worker and one version**:
 - **`version`** — **which version are you testing?** In the quality loop you test the *draft* you're
   improving; for a one-off check of a deployed worker you test the live version. Default to the version
   the user is iterating on. (Scenarios are created with this `version` in the body.)
-- **Channel** — voice or chat (`aiAgentChannelType`), inferred from the worker; only voice workers can
-  run voice scenarios.
+- **Channel** — `aiAgentChannelType`, taken from the target agent's type: `VOICE` for a `VOICE_AGENT`,
+  **`CHAT` for a `CHAT_AGENT` *or* a `STRUCTURED_OUTPUT` agent** (there is no SO channel value). Set it
+  explicitly on every scenario — it's what makes the run execute on the right channel. Confirm by reading
+  back `channelTypeLabel` (the **Type** column in the Scenarios UI).
 - Decide whether to test the **whole worker** or a **specific agent** (`aiAgentId` +
   `isTestSpecificAgent: true`) — useful for a multi-agent worker when you want to test one specialist.
 
@@ -148,9 +153,14 @@ caller on a noisy line, the adversarial/jailbreak caller. Each persona is reusab
   `{generatedPrompt}`. Edit it, then create the persona.
 - **Create**: `POST /personality` (`PersonalityRequest` — `name, gender` (MALE/FEMALE), `mood`
   (HAPPY/FRUSTRATED/…), `prompt`). **For voice simulations set `voiceEnabled:true`** + a voice
-  (`voiceProvider/voiceModel/voiceId/languages`) — without it the sim has no caller audio. Reuse the
-  worker's own voice (verified good: `commotion-tts` / `commotion-laya-v1-5` / voiceId
-  `d6d81480-227c-41cd-af4e-f483262cef0b`, which covers en + hi and more). Realism dials:
+  (`voiceProvider/voiceModel/voiceId/languages`) — without it the sim has no caller audio. **For chat
+  and structured-output simulations, `voiceEnabled:false` is correct** — those channels have no audio,
+  and the voice-enabled requirement above does not apply (verified live: passing chat + SO runs both
+  used a `voiceEnabled:false` persona). Reuse the worker's own voice, picking the `voiceId` from
+  `GET /aiworkervoice?providerId=commotion-tts&modelId=commotion-laya-v1-5` (verified good:
+  `d6d81480-227c-41cd-af4e-f483262cef0b` — the voice **Poornima** — which covers en + hi and more).
+  Keep `voiceProvider` a **`commotion-*`** provider: a non-Commotion voice needs a
+  `voiceProviderCredentialId` you cannot obtain over the API. Realism dials:
   `speakingSpeed`, `interruptionLevel`, `backgroundNoise` (e.g. `NONE`), `packetLoss`. For a
   **bilingual / code-switching** persona set `languages:["en","hi"]` and describe the switch in the
   `prompt` (e.g. "open in English, then switch to Hindi").
@@ -167,6 +177,28 @@ who won't cooperate, guardrail/jailbreak attempts, **prompt-injection / social-e
 language switching, tool-failure handling. Three
 ways to create them — pick per goal, usually (a) for breadth + (b) for the precise edge cases:
 
+> ## ⚠ `aiAgentChannelType` is what makes a scenario runnable on the right channel — always set it
+>
+> All three creation paths take `aiAgentChannelType`, and it decides how `/simulation/run` executes the
+> scenario. **Set it explicitly to match the worker's agent type — never leave it to chance:**
+>
+> | Worker / agent | `aiAgentChannelType` |
+> |---|---|
+> | voice (`VOICE_AGENT`) | `VOICE` |
+> | chat (`CHAT_AGENT`) | `CHAT` |
+> | **structured output (`STRUCTURED_OUTPUT`)** | **`CHAT`** |
+>
+> Valid values are only `VOICE` and `CHAT` (`GET /scenario/dropdown-config` → `channelType`); there is no
+> separate structured-output channel — the schema states `aiAgentChannelType` *"Must be CHAT for
+> CHAT_AGENT / STRUCTURED_OUTPUT and VOICE for VOICE_AGENT"*, and a live SO agent reports
+> `aiAgentChannelType: "Chat"`. The created record echoes back `channelTypeLabel` (`"Chat"`/`"Voice"`) —
+> which is the **Type** column in the Simulations → Scenarios UI, so read it back to confirm.
+>
+> **Chat and SO scenarios run as real simulations** — verified live 2026-08-03, a chat worker scored
+> `passRate 100.0` and an SO worker returned `PASS` through `POST /simulation/run`. Do **not** fall back
+> to `POST /aiworker/run` or a hand-made chat session for these channels; that is a live run
+> (`callMode: COPILOT`), it shows under Observability's live filter, and it yields no pass-rate.
+
 - **(a) AI-generate (breadth)** — `POST /scenario/generate` (`GenerateScenarioRequest`:
   `aiWorkerId, version, instructions, numScenarios, personalityIds, generationType, aiAgentChannelType,
   llm`). `instructions` steers the generator toward the use cases you care about. This is **async**:
@@ -177,7 +209,7 @@ ways to create them — pick per goal, usually (a) for breadth + (b) for the pre
   `maxScenarioGenerationLimit`. **Verified caveat:** generation needs a **deployed (live)** worker —
   against a never-deployed draft it returns a generation id but produces **zero** scenarios (and no
   error). If it comes back empty, fall back to (b). `CHAT` channel is accepted by the API even though
-  the UI marks auto-gen voice-only.
+  the UI marks auto-gen voice-only — and chat/SO scenarios then simulate normally (verified live).
 - **(b) Manual (precise edge cases)** — `POST /scenario` (`ScenarioRequest`: `name, aiWorkerId, version,
   intent, complexity, pathType, personalityId, situation, userScript, scenarioGoal, extraContext,
   aiAgentChannelType`). Use `complexity`/`pathType` codes from the dropdown-config. `userScript` is what

@@ -44,10 +44,12 @@ create-worker → generate-scenarios → run-evals → [improve-worker]
    loop stops when `passRate ≥ threshold` or a max-round cap is hit. The final improved draft deploys
    **only on the user's explicit "yes"** (same gate as create-worker Phase 10).
 
-**Prerequisite (verified live):** evals are **voice-only** and need a **deployed** worker — the loop
-runs on a *draft version of an already-live voice worker* (that draft is simulatable; a never-deployed
-worker returns *"Worker is not available"*). If the target is chat or never deployed, get it to a live
-voice worker first (see `commotion-run-evals` prerequisites).
+**Prerequisite (verified live):** evals need a **deployed** worker — the loop runs on a *draft version of
+an already-live worker* (that draft is simulatable; a never-deployed worker returns *"Worker is not
+available"*). **Channel is not a constraint:** voice, chat and structured-output workers all simulate via
+`POST /simulation/run` (verified live 2026-08-03 — chat `passRate 100.0`, SO `PASS`), so **never convert a
+chat worker to voice just to run the loop**. If the target has never been deployed, deploy it once first
+(see `commotion-run-evals` prerequisites).
 
 ## When to use this
 

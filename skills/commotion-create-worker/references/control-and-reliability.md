@@ -141,6 +141,28 @@ Tested by deploying a worker and driving it through `POST /aiworker/run`, agains
 The **primary model and its fallback both exist for voice and chat — but in different blocks.** The
 trap is only `workerAdvancedSettingsRequest`: a voice worker rejects it.
 
+> ## ⚠ Provider rule: always Commotion for LLM / STT / TTS
+>
+> **Only a Commotion first-party provider can be fully configured over the API.** `commotion` (LLM),
+> `commotion-tts` (TTS), `commotion-llm` / `commotion-asr` (STT) are *platform models* — no credential
+> needed. Every other provider (`openai`, `anthropic`, `cerebras`, `vayu`, `eleven-labs`, `cartesia`,
+> `sarvam`, `smallest-ai`) is tied to a **ClientProviderCredential**, and:
+> - the **primary** LLM, TTS and STT request objects have **no credential field at all**;
+> - **no endpoint lists or creates** those credentials (`/ai-worker-tool/credentials` is the unrelated
+>   SaaS-connector plane);
+> - the backend **accepts the bad config silently** — `PUT /aiworker` with `provider: "eleven-labs"` for
+>   TTS *and* STT returned `200`, no warning, no credential anywhere in the response (verified
+>   2026-08-03).
+>
+> The result in the UI is *Provider: filled · **Credential: blank** · Model: filled* — saved and
+> unrunnable. **So: never set a non-Commotion provider, and never backfill a model when you cannot set
+> its credential** — leave the whole block on Commotion or unset. Only `credentialId` on a **fallback**
+> model (`WorkerFallbackModelConfigurationRequest` / `FallbackModelConfigurationRequest`) and
+> `voiceProviderCredentialId` on `LLMConfig` (simulator / eval-metric LLM) accept one, and only if you
+> already hold the id — `GET /aimodel?credentialId=<id>` filters models to a given credential, and
+> `AiModelResponse.credentialId` is *"null for platform models"*. If the user wants an external provider
+> for STT/TTS/LLM, say it must be set in the UI and change nothing.
+
 **Voice worker — set the LLM + fallback in the Voice Settings block, NOT advanced settings.** In the
 UI this is *Voice Settings → LLM Settings*: Provider, Model, **Fallback Provider / Fallback Credential
 / Fallback Model**, Temperature. Over the API these live under
@@ -181,11 +203,20 @@ worker has *two* places a model can be set, and they behave differently (verifie
     `reasoningEffort`). Get the model `id`s from `GET /aimodel` (e.g. `commotion-medium` =
     `69fc2c6ece21b786c1e36258`, `gpt-4o-india` = `6a354c1e20939d72a7122099`). The response echoes back
     as `modelConfigurationResponseList` + `advancedSettingsResponse.languageModelSettingsResponse`.
-  - **Set this on the agent every time a chat worker has a model/fallback — it is the default, not an
-    optional extra.** An agent with no override still inherits the worker-level default at runtime, but
-    the UI panel shows **blank**, which reads as "not saved" *every time* someone opens it. So don't
-    rely on the worker-level config alone: mirror the model + fallback onto the agent so they are always
-    visible and editable in the UI (this is also where you'd override the model per-agent).
+  - **Set this on the agent every time — it is mandatory, not an optional extra.** ⚠ Corrected
+    2026-08-03: an agent does **not** inherit the worker-level model. A **hand-POSTed** agent that omits
+    `modelConfigurationRequestList` lands with `modelConfigurationResponseList: []` — genuinely no model,
+    and a blank *Provider / Credential / Model* panel that cannot be run, not merely a display gap. An
+    **auto-provisioned** agent is born with the **platform default** (`commotion` /
+    `commotion-3.6-35b`), again ignoring the worker-level choice: a worker set to `commotion-3.6-27b`
+    produced a default agent on `commotion-3.6-35b` — verified in both chat and voice. So always mirror
+    the model + fallback onto the agent explicitly (this is also where you'd override per-agent).
+  - **⚠ The primary model is a TOP-LEVEL array, and mis-nesting it fails silently.**
+    `LanguageModelSettingsRequest` has **no** primary-model property, so
+    `advancedSettingsRequest.languageModelSettingsRequest.languageModelConfigurationRequest` (which
+    mirrors the *worker* shape and is the natural guess) is **dropped without error** — `200`, the
+    sibling settings round-trip, and only `modelConfigurationResponseList: []` shows the loss. Always
+    read that array back after a create/update.
   - **Editing the agent needs the worker in DRAFT.** If it's already LIVE, the agent `PUT` fails
     `400 "Agent can only be updated/deleted when worker is in draft status."` — revert first
     (`POST /aiworker/{id}/draft?version=N` → a new draft version, live keeps serving), edit the agent on
@@ -198,8 +229,12 @@ single "worker model" that every agent shares — each agent resolves by its own
   `advancedSettingsRequest` on a `VOICE_AGENT` is rejected (`400 "Advanced settings is not supported for
   VOICE_AGENT type."`), so it draws its brain (and fallback) from the worker's
   `workerVoiceSettingsRequest.workerLLMConfigurationRequest` (the *Voice Settings → LLM Settings* block).
-  (The `advancedSettingsRequest` path is the verified rejection; a top-level `modelConfigurationRequestList`
-  override on a `VOICE_AGENT` hasn't been tested — assume the voice agent follows the worker LLM.)
+  (The `advancedSettingsRequest` path is the verified rejection.) ⚠ **But a `VOICE_AGENT` does carry a
+  top-level `modelConfigurationRequestList`** — verified 2026-08-03: an auto-provisioned `VOICE_AGENT`
+  came back with `modelConfigurationResponseList` populated at the **platform default**
+  (`commotion` / `commotion-3.6-35b`) even though the worker's Voice-Settings LLM was
+  `commotion-3.6-27b`. So a voice agent does **not** simply follow the worker LLM; set
+  `modelConfigurationRequestList` on it too if you need a specific model, and read it back.
 - **`CHAT_AGENT` member → its own agent-level config.** It carries its own primary + fallback exactly as
   the chat-worker case above (`modelConfigurationRequestList` + `advancedSettingsRequest.languageModelSettingsRequest`),
   and that's what the UI's *Agent → Advanced → Language Model* panel shows/edits for it.

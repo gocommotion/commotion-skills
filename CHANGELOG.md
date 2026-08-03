@@ -1,5 +1,101 @@
 # Changelog
 
+## 2026-08-03 — 1.5.1 — QA bug sweep: chat/SO simulations, the UI-only crawler, Commotion-only providers, the voice catalogue, and the agent's missing model
+
+Five QA-reported bugs, all of them **skill defects rather than platform defects** — the API supported the
+right thing in four of the five cases and the skills either forbade it, missed the endpoint, or wrote a
+silently-broken payload. Everything below was verified live against dev3 on 2026-08-03 with purpose-built
+workers, and each fix names the evidence.
+
+- **The "simulations are voice-only" rule was false, and it was the root of bug 1.** Six files asserted, as
+  a verified hard constraint, that only voice workers can be simulated. They cannot all have been right:
+  `POST /simulation/run` accepted a **chat** worker and returned **`passRate 100.0`**, and a
+  **`STRUCTURED_OUTPUT`** worker returned **`scenarioEvaluationResult: "PASS"`** — both echoing
+  **`onlyChatScenarios: true`**. There is **one** simulation endpoint for every channel; the channel comes
+  from each **scenario's `aiAgentChannelType`**, and `GET /scenario/dropdown-config` has always listed
+  `channelType: [VOICE, CHAT]`. Corrected in `commotion-run-evals` (SKILL + `simulation-and-results.md`),
+  `commotion-generate-scenarios` (SKILL + both references), `commotion-improve-worker` (SKILL +
+  `improvement-loop.md`), `commotion-quality-loop`, `commotion-debug`, and `commotion-create-worker`.
+- **Why the false rule survived: a generic error was mis-generalised.** A failing chat run reports only
+  *"An error has occurred during simulation. Please contact support with reference number …"* with
+  `duration 0.0`. On the worker that produced it the simulation had in fact **started correctly** and
+  injected the scenario's `userScript` verbatim; the real cause sat in the session's own `errors[]` —
+  `litellm.AuthenticationError: Incorrect API key provided: sk-… model: openai/qwen3-next`, a **worker LLM
+  credential fault**. The skills now require reading `/api/chat/session/<scenario-run-id>` (or
+  `/api/calls?requestId=`) before drawing any conclusion from a generic simulation error, and say
+  explicitly that such an error is never a statement about the channel.
+- **`STRUCTURED_OUTPUT` lives on the CHAT channel.** Per the schema, `aiAgentChannelType` *"must be CHAT for
+  CHAT_AGENT / STRUCTURED_OUTPUT and VOICE for VOICE_AGENT"*, and a freshly provisioned SO agent reports
+  `aiAgentChannelType: "Chat"`. There is no SO channel value. Added as a table to
+  `commotion-generate-scenarios`, which now also requires setting `aiAgentChannelType` explicitly on every
+  scenario and reading `channelTypeLabel` back (it is the **Type** column in the Scenarios UI).
+- **Never run a live session in place of a simulation.** The observability half of bug 1: because chat sims
+  were believed impossible, chat workers were "tested" via `POST /aiworker/run` and hand-invented session
+  ids (`fix-orch-1`, `diag-orch-1`, … all still visible on the reported worker). Call Analyzer tags those
+  `callMode: COPILOT`, so they land under Observability's **live** filter with no `scenarioEvaluationResult`
+  and no pass-rate. Now called out as a prohibition in `commotion-run-evals`, `commotion-generate-scenarios`
+  and `commotion-debug`.
+- **Personality `voiceEnabled` is channel-specific.** The rule "personalities must be `voiceEnabled: true`"
+  is a **voice** rule; for chat/SO, `false` is correct and sufficient — both passing runs above used a
+  `voiceEnabled: false` persona. Previously stated unconditionally, which pushed toward voice-converting
+  chat workers.
+- **`WEBSITE_CRAWL` is unusable over the API — bug 2.** Searching the whole spec (220 paths) there is **no
+  crawl endpoint and no crawl-config field anywhere**; `WEBSITE_CRAWL` exists only as an enum value. The
+  crawler is a UI-only service. Confirmed by a controlled A/B on one worker against the same page
+  (`https://react.dev/learn`): `WEBSITE_CRAWL` + a raw URL → **`Failure`**; fetch-then-`TEXT_UPLOAD` →
+  **`Completed`**. The mechanism is now documented — the backend concatenates the storage container with
+  `sourceUrlIdentifier` verbatim, so a URL there becomes
+  `…/digitalassets-storage-data/https%3A%2F%2Freact.dev%2Flearn`, a blob that never existed. The item is
+  accepted with `200`, sits at `Draft`, then flips to `Failure` on index. `knowledge-and-rag.md` gains the
+  prohibition, the A/B table, a **"Fetched web page"** recipe, and the rule that **`sourceUrlIdentifier` is
+  always a storage key, never a URL** — plus a note to delete any `Failure` crawl item rather than leave it
+  in the KB, and that `pageNumber` is **0-based** (`pageNumber=1` returns `[]` and reads as "no knowledge").
+- **Always a Commotion provider for LLM / STT / TTS — bug 3, and it is worse than reported.** The report was
+  that credentials go unselected while the model gets backfilled. The cause: **the primary LLM, TTS and STT
+  request objects have no credential field at all** (only *fallback* models and the simulator/eval-metric
+  `LLMConfig` do), and **no endpoint lists or creates** client provider credentials —
+  `AiModelResponse.credentialId` is documented *"null for platform models"*. So a non-Commotion provider can
+  only ever be written credential-less. And the backend does not object: `PUT /aiworker` with
+  `provider: "eleven-labs"` for **both** TTS and STT returned **`200`, no error, no warning**, with no
+  credential anywhere in the response — rendering as *Provider: filled · Credential: blank · Model: filled*,
+  saved and unrunnable. New **"Providers and credentials"** section in `aiworker-lifecycle.md` with a
+  field-by-field credential table, a matching box in `control-and-reliability.md`, and top-level rules in
+  `commotion-create-worker`: use `commotion` / `commotion-tts` / `commotion-llm`, never write a
+  provider/model you cannot credential, and tell the user an external provider is UI-only rather than
+  half-configuring it.
+- **The voice catalogue exists: `GET /aiworkervoice` — bug 4.** Voices were assumed UI-only because the
+  endpoint is one word with no separator, so searching for `/voice` finds nothing — and
+  `aiworker-lifecycle.md` actively misdirected to `GET /aimodel`, which returns *language* models and has
+  no voices in it. `/aiworkervoice` filters by `providerId`/`modelId`/`languageId`/`accentId` and returns
+  `voiceId`, `voiceName`, a prose description, and `languageIdToVoiceUrlMap` — per-language **sample audio**
+  to play to the user. All five `commotion-laya-v1-5` voices are now tabled (Komal, Raj, Poornima, Tanya,
+  **Abhay**), with the note that the long-quoted "verified-good" UUID `d6d81480…` is simply **Poornima**.
+  Also corrected: `accentIdToAccentDropdownOutputMap` is **language accents**, not voices, and will never
+  yield a `voiceId`. The skills now query the catalogue and offer named choices when asked to pick a voice.
+- **Every agent needs `modelConfigurationRequestList` — bug 5.** An agent created without it lands with
+  `modelConfigurationResponseList: []` — genuinely no model, a blank *Provider / Credential / Model* panel,
+  and an agent the user cannot run. The primary model is a **top-level array** on `AiAgentRequest`
+  (`{id, modelCode, providerCode}`, all three required, `id` from `/aimodel`);
+  `LanguageModelSettingsRequest` has **no** primary-model property, so nesting it there — the natural guess,
+  since it mirrors the *worker* shape, which genuinely is nested — is **silently dropped**: `200`, sibling
+  settings round-trip, only the empty response array reveals the loss.
+- **Two corrections to the agent/worker model story.** Measured in both directions, so neither is inference:
+  (a) **agents inherit nothing from the worker's model choice** — a chat worker set to `commotion-3.6-27b`
+  and a voice worker set to `commotion-3.6-27b` both produced default agents on **`commotion-3.6-35b`**, the
+  platform default; the previous claim that an agent "still inherits the worker-level default at runtime"
+  was wrong, and the panel being blank is a real broken state, not a display gap. (b) A **`VOICE_AGENT` does
+  carry** a top-level `modelConfigurationRequestList` (its auto-provisioned one came back populated), so the
+  earlier "assume the voice agent follows the worker LLM" speculation is replaced with the measurement. This
+  makes the mandatory-model rule apply to **chat, voice and SO alike** — and it matters most on the
+  **delete-default-then-POST** path the skills require for UI-visible prompts, which is exactly where the
+  model goes missing.
+- **Smaller verified fixes.** `POST /aiagent` **requires `maximumOutputTokens`** (omitting it returns
+  `400 "languageModelSettingsRequest.maximumOutputTokens is required"`). The `/aiagent` list filter is
+  **`workerId`**, not `aiWorkerId` — the wrong name is silently ignored and returns a global, paginated
+  list. And a new standing principle across `commotion-create-worker`: **read the response back after every
+  write** rather than trusting the `200`, because several fields here are silently dropped when mis-shaped
+  or accepted-but-broken.
+
 ## 2026-07-27 — 1.5.0 — a debug skill: RCA a real call, reproduce it, then fix the worker
 
 All five existing skills point forward — build, generate scenarios, run evals, improve. Nothing pointed

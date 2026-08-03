@@ -15,9 +15,10 @@ State carried between rounds: `WORKER_ID`, the **draft version** under improveme
 `SIM_ID`, the running **per-round summary** (round · edits · passRate · Δ), `threshold` (default **80**
 — `passRate` is a **0–100 percentage**), `maxRounds` (default 3).
 
-**Prerequisite (verified live):** the loop only works on a **voice worker that has been deployed at
-least once** — evals are voice-only, and a draft version of an already-live worker is simulatable (a
-never-deployed worker returns *"Worker is not available"*).
+**Prerequisite (verified live):** the loop works on **any worker that has been deployed at least once** —
+a draft version of an already-live worker is simulatable (a never-deployed worker returns *"Worker is not
+available"*). **Channel is not a constraint:** voice, chat and structured-output all simulate via
+`POST /simulation/run` (chat `passRate 100.0`, SO `PASS`, verified 2026-08-03).
 
 ## Stop conditions (check after every re-run)
 

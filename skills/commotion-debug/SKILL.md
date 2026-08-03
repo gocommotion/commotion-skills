@@ -56,11 +56,14 @@ hand off to `commotion-improve-worker` (see **Escalation**).
 - **The Call Analyzer plane must be connected.** If `commotion_analyzer` isn't in your tools, the MCP
   server has no Call Analyzer api key configured — say so and stop; there is no fallback source for
   this evidence.
-- **Reproduction is voice-only.** Simulations run voice, so the must-fail/must-pass gates only close
-  for a voice call on a worker that has been **deployed at least once** (a never-deployed worker returns
-  *"Worker is not available"*). For a **chat** session you can still do Phases 0–2 and 4, but the gate
-  is weaker — see **Chat sessions** below. Say which gate you are operating under; never imply a text
-  spot-check proved what a simulation would have.
+- **Reproduction needs a deployed worker — but not a voice one.** The must-fail/must-pass gates close on
+  a **simulation**, and simulations run on **voice, chat and structured-output** workers alike
+  (`POST /simulation/run`, channel set per scenario via `aiAgentChannelType` — `CHAT` for chat *and* SO;
+  verified live 2026-08-03: chat `passRate 100.0`, SO `PASS`). What's required is that the worker has been
+  **deployed at least once** (a never-deployed worker returns *"Worker is not available"*). So a chat or
+  SO bug gets the **same** full-strength repro gate as voice — build the scenario and simulate it. Reserve
+  the weaker text spot-check for when no simulation is possible at all, and say which gate you used;
+  never imply a spot-check proved what a simulation would have.
 
 ## How this skill talks to the platform (read first)
 
@@ -357,13 +360,21 @@ Phases 0–2 work fully: `/api/chat/session/<session-id>` carries `runs`, `perfo
 Phase 1 step 3's whole ladder applies with no `session_id`/`start`/`end` to supply (mind the filter
 unscoping trap). Chat logs come from the same stream and the same config-logging modules as voice, so the
 config mining — `|~:Worker Config`, `|~:system instruction`, `|~:tools configured|No .* configured` —
-works unchanged. Phase 4's edits are identical. What you cannot do is Phase 3 and Phase 5 — simulations
-are voice-only. Verify instead with a text spot-check: `commotion_request` `{ "method": "POST", "path":
-"/aiworker/run", "body": { … } }` (needs an identity — `userId` / `fingerprintId` / `audienceId` — and a
-deployed worker with an enabled agent), replaying the caller's turns verbatim.
+works unchanged. Phase 4's edits are identical.
 
-State the difference plainly in the report: **`repro: n/a (chat — text spot-check only)`**. A text
-spot-check is not a reproduction and does not license the confidence a 3-of-4 simulation would.
+**Phases 3 and 5 also work for chat — do them.** ⚠ Corrected 2026-08-03: chat (and structured-output)
+workers simulate through `POST /simulation/run` just like voice, so build the repro scenario with
+`aiAgentChannelType: "CHAT"` and close the real gates. Verified: a chat worker returned `passRate 100.0`
+and an SO worker `PASS`. The scenario-run id **is** the chat session id, so the RCA evidence joins back
+via `/api/chat/session/<scenario-run-id>`.
+
+Only if a simulation genuinely can't be built (e.g. the worker was never deployed) fall back to a text
+spot-check: `commotion_request` `{ "method": "POST", "path": "/aiworker/run", "body": { … } }` (needs an
+identity — `userId` / `fingerprintId` / `audienceId` — and a deployed worker with an enabled agent),
+replaying the caller's turns verbatim. That is a **live** run (`callMode: COPILOT`, shows under
+Observability's live filter), not a simulation — state it plainly as
+**`repro: n/a (text spot-check only)`**. A text spot-check is not a reproduction and does not license the
+confidence a 3-of-4 simulation would.
 
 ## Escalation
 

@@ -156,7 +156,11 @@ Build a candidate `AiWorkerRequest` grounded in Phase 0. Hold it as the `body` y
   one question at a time, read names/numbers back (this style applies to whatever the agent *says*).
 - **Voice + languages** (if voice-enabled) — set the voice block; list every language in
   `workerVoiceSettingsRequest.workerVoiceConfiguration.allowedLanguages` (that block also needs
-  `model` / `provider` / `voiceId`, or let backend defaults stand). **Multilingual language rule
+  `model` / `provider` / `voiceId`, or let backend defaults stand). **Pick the `voiceId` from the voice
+  catalogue: `GET /aiworkervoice?providerId=<tts provider>&modelId=<tts model>`** — it returns
+  `voiceId` + `voiceName` + description + per-language sample audio URLs. It is **not** `/aimodel`
+  (that's language models) and it is **not** UI-only; when the user says "choose a voice", list the
+  candidates by name and let them pick. **Multilingual language rule
   (bake into the prompt):** stay in the caller's spoken language and continue the WHOLE call in it;
   treat a mobile number, policy number, OTP, or amount read out in English digits as normal data and
   do **NOT** switch the conversation language — and do **NOT** trigger the `Switch Language` built-in
@@ -210,6 +214,20 @@ Build a candidate `AiWorkerRequest` grounded in Phase 0. Hold it as the `body` y
   `advancedSettingsRequest.languageModelSettingsRequest` — so they're always visible/editable in the UI
   (editing an agent needs the worker in DRAFT). Get codes from `/aimodel`. See
   `references/control-and-reliability.md`.
+  **Provider rule — always `commotion`.** Pick a Commotion first-party provider for LLM **and** TTS
+  **and** STT: non-Commotion providers (openai/anthropic/cerebras/vayu, eleven-labs/cartesia/sarvam/
+  smallest-ai) require a client provider credential that **no API field can carry** for these blocks, and
+  the backend accepts them anyway with `200` and no warning — leaving a saved-but-unrunnable
+  provider+model with a blank Credential. Never set a provider/model pair you cannot also credential;
+  if the user wants an external provider, tell them it is UI-only and leave the block on Commotion.
+  Details + the field-by-field credential table: `references/aiworker-lifecycle.md` ("Providers and
+  credentials").
+- **Every agent needs its own primary model — `modelConfigurationRequestList`** (top-level on
+  `AiAgentRequest`, `[{id, modelCode, providerCode}]` with all three keys). Applies to **voice and SO
+  agents too**, not just chat: agents do **not** inherit the worker's model, and an agent created without
+  this field lands with an empty model and a blank Language Model panel. Nesting it inside
+  `languageModelSettingsRequest` is silently dropped. See `references/agents-and-orchestration.md`
+  ("The agent's primary model").
 - **Structured output** — if chosen in Phase 2, set `structuredOutputEnabled: true` here (the agent's
   schema is configured in Phase 6).
 
@@ -497,9 +515,11 @@ generate test scenarios, evaluate the pass-rate, and iterate until it clears a t
   (it will convert/deploy as needed). This is the right path for a production statement; stopping at a
   built worker leaves it unverified.
 - **On "quick spot-check":** drive a few real turns yourself (below).
-- **Prerequisite for the loop (state it):** automated simulations/evals are **voice-only** and need the
-  worker **deployed at least once** (a never-deployed or chat worker can't be simulated) — so a voice
-  build deployed in Phase 10 is what makes the loop runnable.
+- **Prerequisite for the loop (state it):** automated simulations/evals run on **voice, chat AND
+  structured-output** workers (one endpoint, `POST /simulation/run`; the channel comes from each
+  scenario's `aiAgentChannelType`) — what they do need is the worker **deployed at least once**, since a
+  never-deployed worker has no runtime. So the Phase 10 deploy is what makes the loop runnable,
+  whatever the channel.
 
 Text spot-check (the lightweight path):
 
@@ -537,6 +557,19 @@ Editing the live worker means revert-to-draft → edit the agent at the new draf
 
 - Ground before you draft; never invent a field that isn't in the schema (`commotion_schema`).
 - A worker isn't usable until its agent is **enabled** — treat Phase 6 as mandatory, not optional.
+- **Always a Commotion provider for LLM / STT / TTS.** Non-Commotion providers need a credential no API
+  field can carry, and the backend saves them silently with a blank Credential. Never write a
+  provider/model you can't credential; if the user wants an external one, it's UI-only — say so and
+  change nothing.
+- **Every agent carries its own `modelConfigurationRequestList`** (top-level, `{id, modelCode,
+  providerCode}` from `/aimodel`) — chat, voice and SO alike. Agents inherit **nothing** from the worker's
+  model choice, and mis-nesting this field inside `languageModelSettingsRequest` is dropped silently.
+  Read `modelConfigurationResponseList` back to confirm.
+- **Voices come from `GET /aiworkervoice`, not `/aimodel`** — and the crawler has no API: a web page must
+  be fetched by you and uploaded as `TEXT_UPLOAD`/`DOCUMENT_UPLOAD`, never `WEBSITE_CRAWL`.
+- **After each write, read the response back** rather than trusting the `200`. Several fields on this API
+  are silently dropped when mis-shaped (agent model config) or silently accepted-but-broken
+  (non-Commotion providers, `WEBSITE_CRAWL`).
 - Grounding needs both halves: knowledge must be **created and indexed** — attaching without
   indexing (or deploying before indexing finishes) means the worker has nothing to ground on.
 - Show every write before you make it; the user approves going live.
