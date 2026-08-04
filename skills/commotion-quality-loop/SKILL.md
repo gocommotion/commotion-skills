@@ -48,14 +48,18 @@ whole loop for a single-step request.
 
 ## Hard prerequisites (verified live — the loop can't run without these)
 
-Automated evals are **voice-only** and need a **deployed** worker. So before any evals:
-- The target worker must be **voice-enabled** (a chat worker fails every simulation).
-- It must have been **deployed (live) at least once** — a never-deployed worker returns *"Worker is
+Automated evals need a **deployed** worker. There is exactly **one** hard prerequisite:
+- The worker must have been **deployed (live) at least once** — a never-deployed worker returns *"Worker is
   not available"* and can't be simulated. (After that, a **draft version** of it *can* be simulated,
   which is what lets the improve loop run on a draft.)
 
-If the worker doesn't meet these, the loop's job is to get it there (build a voice worker and deploy
-it) before generating scenarios.
+**Channel is NOT a prerequisite.** Voice, chat and structured-output workers all simulate through
+`POST /simulation/run`; the channel comes from each scenario's `aiAgentChannelType` (`VOICE`, or **`CHAT`
+for chat *and* structured output**). Verified live 2026-08-03: a chat worker scored `passRate 100.0` and
+an SO worker returned `PASS`. **Never voice-enable a chat worker just to run the loop** — build the test
+set on its own channel.
+
+If the worker hasn't been deployed, the loop's job is to get it deployed before generating scenarios.
 
 ## Transport — same as the specialists
 

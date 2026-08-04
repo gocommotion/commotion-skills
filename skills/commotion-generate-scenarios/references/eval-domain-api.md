@@ -58,8 +58,13 @@ create must be the worker's **LIVE** version, else 500.)
 
 ## Verified-live constraints (dev3 — the ones that bite)
 
-- **Evals/simulations are VOICE-ONLY.** A chat worker fails every sim run with a generic *"An error has
-  occurred during simulation…"*. Make the worker voice-enabled first.
+- **Evals/simulations run on EVERY channel** — voice, chat and structured output, all through
+  `POST /simulation/run`; the channel comes from each scenario's `aiAgentChannelType` (`VOICE`/`CHAT`,
+  with SO on **`CHAT`**), and an all-chat batch echoes `onlyChatScenarios: true`. Verified live
+  2026-08-03: chat → `passRate 100.0`, SO → `PASS`. Don't voice-enable a chat worker to test it.
+  ⚠ A generic *"An error has occurred during simulation…"* says nothing about the channel — read the
+  run's session (`/api/chat/session/<scenario-run-id>` → `errors[]`) for the real cause; one verified
+  case was a worker LLM credential fault.
 - **The worker must be deployed (live) at least once.** A never-deployed worker → sims fail
   (*"Worker is not available"*) and AI scenario-generation yields nothing. A **draft version of an
   already-live worker CAN be simulated** (this is what makes the draft-only improve loop work).

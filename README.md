@@ -47,8 +47,9 @@ and because the evaluator itself sometimes returns no verdict at all.
 
 Run it **end-to-end with one request** via the **`commotion-quality-loop`** coordinator — it sequences
 the four specialists and owns the "iterate until the pass-rate clears a threshold" control flow — or
-invoke any specialist on its own for a single step. *(Automated evals are **voice-only** and need a
-worker deployed at least once — the coordinator ensures that before evaluating.)*
+invoke any specialist on its own for a single step. *(Automated evals run on **voice, chat and
+structured-output** workers alike — the one requirement is a worker deployed at least once, which the
+coordinator ensures before evaluating.)*
 
 ### Debugging production issues
 
@@ -67,8 +68,9 @@ The discipline is **reproduce before you fix**: a fix chosen from a transcript a
 loop will not edit anything until a simulation fails the same way the prod call did. Both gates are
 rates, not verdicts — a voice run false-passes often enough that a bare "fixed" is misinformation. When
 the problem turns out to be breadth rather than one defect, it hands off to `commotion-improve-worker`.
-*(Reproduction is voice-only; a chat session gets full RCA but verifies with a text spot-check, and the
-skill says so rather than implying otherwise.)*
+*(Reproduction works on any channel — voice, chat and structured-output workers all simulate — so a chat
+defect gets the same full-strength repro gate as a voice one; the weaker text spot-check is reserved for
+when no simulation can be built, and the skill labels which gate it used.)*
 
 ## Layout
 

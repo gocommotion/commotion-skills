@@ -39,11 +39,39 @@ Item shape: `commotion_schema` `{ "schema_name": "CreateAiWorkerKnowledgeItemReq
    with a **direct `curl` PUT** (this one call is bash, not a `commotion_request`). The store is
    **Azure Blob Storage**, so the PUT **must** include the header `x-ms-blob-type: BlockBlob` —
    without it Azure returns `400`. Success is **`201`** with an empty body (verified live).
-5. **`sourceUrlIdentifier` links knowledge to its file.** Pass the upload's returned
-   `fileUrlIdentifier` as the knowledge item's `sourceUrlIdentifier`.
+5. **`sourceUrlIdentifier` is ALWAYS a blob-storage key — never a URL.** Pass the upload's returned
+   `fileUrlIdentifier` as the knowledge item's `sourceUrlIdentifier`. The backend builds the item's
+   `sourceUrl` by concatenating the storage container with this value verbatim, so a URL put here
+   becomes a nonexistent blob path and indexing fails. See rule 9.
 6. **The file must be readable on the machine Claude runs on.** The PUT reads bytes from a local
    path. If the user gives a URL, download it to a local file first, then upload — there is no
    server-side "ingest from URL" in this flow.
+9. **⚠ NEVER use `aiWorkerKnowledgeType: "WEBSITE_CRAWL"` over the API — there is no crawler behind it.**
+   `WEBSITE_CRAWL` exists only as an enum value on the knowledge-type list. Searching the whole dev3
+   spec (220 paths) there is **no crawl endpoint and no crawl-config field anywhere** — no seed URL,
+   depth, or page-limit property in any schema. The crawler is a **UI-only** service; the API exposes
+   only the final knowledge record, which must already point at fetched content in blob storage.
+
+   Verified live 2026-08-03 (controlled A/B on one worker, same source page `https://react.dev/learn`):
+
+   | Attempt | `aiWorkerKnowledgeType` | `sourceUrlIdentifier` | Resulting status |
+   |---|---|---|---|
+   | crawl | `WEBSITE_CRAWL` | `https://react.dev/learn` | **`Failure`** |
+   | correct | `TEXT_UPLOAD` | `demo/…/1785740968209-yuiL_reactlearn.txt` | **`Completed`** |
+
+   The crawl attempt is accepted with **`200`** (the enum is valid) and lands at `Draft`, then flips to
+   `Failure` on index. Its `sourceUrl` shows the mechanism exactly — the raw URL got percent-encoded and
+   appended to the container:
+   `https://…blob.core.windows.net/mvmt-dev-digitalassets-storage-data/https%3A%2F%2Freact.dev%2Flearn`.
+
+   **So to get a web page into a KB: fetch it yourself, convert it to text, and upload it** via
+   `/file-upload/text` (or `/file-upload/url` for a real file) with
+   `aiWorkerKnowledgeType: "TEXT_UPLOAD"` / `"DOCUMENT_UPLOAD"` — the "Fetched web page" recipe below.
+   Tell the user plainly that the platform's own crawler is UI-only and you ingested a snapshot
+   instead; don't silently present it as a crawl. If a `WEBSITE_CRAWL` item is already sitting at
+   `Failure`, delete it (`DELETE /aiworker/knowledge` with `[id]`) rather than leaving it in the KB.
+10. **`pageNumber` is 0-based on `GET /aiworker/knowledge`.** `pageNumber=1` on a worker with one page
+    of items returns `[]` — which reads as "no knowledge" and is not. Start at `pageNumber=0`.
 7. **Status fields are human-readable labels, not raw enums.** `aiWorkerKnowledgeStatus` reads
    `"Draft"` → `"In Progress"` → ready; a fresh bulk item starts at `"Draft"`, and stays `"Draft"`
    until you index it.
@@ -59,7 +87,9 @@ Required: **`aiWorkerId`**, **`name`**, **`fileName`**, **`sourceUrlIdentifier`*
 
 - **`sourceType`** — `HTML`, `PDF`, `DOC`, `PPT`, `VIDEO`, `IMAGE`, `CSV`, `XLSX`, `TEXT`, `MARKDOWN`.
 - **`aiWorkerKnowledgeType`** — e.g. `TEXT_UPLOAD`, `DOCUMENT_UPLOAD`, `KNOWLEDGE_BASE`,
-  `WEBSITE_CRAWL`, `CLOUD_IMPORT`, … (use `TEXT_UPLOAD` for inline text, `DOCUMENT_UPLOAD` for files).
+  `WEBSITE_CRAWL`, `CLOUD_IMPORT`, … Use **`TEXT_UPLOAD`** for inline text *and for fetched web pages*,
+  **`DOCUMENT_UPLOAD`** for files. **`WEBSITE_CRAWL` is unusable over the API — see golden rule 9**;
+  it is accepted then fails to index.
 - **`category`** — `FAQ`, `TROUBLESHOOTING`, `MANUAL`, `VIDEO`.
 
 `fileType` on the file-upload bodies is `IMAGE` / `VIDEO` / `AUDIO` / `OTHER` (use `OTHER` for text/docs).
@@ -90,6 +120,25 @@ POST /aiworker/knowledge/bulk  [{ aiWorkerId:<id>, name:"Handbook", fileName:"ha
 POST /aiworker/knowledge/index  [ "<item id>" ]
 # poll until ready
 ```
+
+**Fetched web page (the substitute for the UI-only crawler — verified live):**
+```
+# 1. fetch + strip to text YOURSELF (bash/curl, not an MCP call). Keep the source URL in the text
+#    so the grounding stays attributable:
+curl -sL "https://react.dev/learn" -o page.html      # then strip tags -> page.txt
+# 2. upload the TEXT (content goes in the body; no separate byte PUT for /file-upload/text):
+POST /aiworker/file-upload/text  { content:"<the extracted text>", fileName:"react-learn.txt",
+        fileType:"OTHER" }                            -> capture fileUrlIdentifier
+# 3. create as TEXT_UPLOAD - NOT WEBSITE_CRAWL:
+POST /aiworker/knowledge/bulk  [{ aiWorkerId:<id>, name:"React Learn (react.dev)",
+        fileName:"react-learn.txt", sourceType:"TEXT", aiWorkerKnowledgeType:"TEXT_UPLOAD",
+        category:"MANUAL", sourceUrlIdentifier:<fileUrlIdentifier> }]
+POST /aiworker/knowledge/index  [ "<item id>" ]
+# poll GET /aiworker/knowledge?aiWorkerId=<id>&pageNumber=0 until "Completed"
+```
+Reached `Completed` on the same page whose `WEBSITE_CRAWL` attempt reached `Failure`. For a PDF or other
+binary at a URL, download it and use the **Uploaded document** recipe (`/file-upload/url` + the Azure
+`curl` PUT) instead.
 
 **Existing global KB (already published — no index):**
 ```

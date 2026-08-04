@@ -124,12 +124,62 @@ Required: **`aiWorkerId`**, **`version`**, **`name`**, **`description`**. Useful
   `STRUCTURED_OUTPUT`, `CUSTOM`.
 - **`instructions`** — the agent's system prompt / behaviour.
 - **`aiAgentEnabled`** — boolean; must be `true` to count toward the deploy gate.
-- Also available: `advancedSettingsRequest` (agent LLM settings — fallback list, retries, tokens),
-  `modelConfigurationRequestList` (the agent's **primary** model, `[{id, modelCode, providerCode}]`).
-  For a **chat** worker these two are what the UI's *Agent → Advanced → Language Model* panel shows and
-  edits — **always set the model here** (not just at the worker level), or the UI panel shows blank
-  every time; see `control-and-reliability.md` ("Chat worker — always set the model on the AGENT").
-  Plus `aiAgentSubscriptionRequestList`, `aiAgentTriggerInputList`, `structuredOutputConfig`, `imageUrl`.
+- Plus `aiAgentSubscriptionRequestList`, `aiAgentTriggerInputList`, `structuredOutputConfig`, `imageUrl`.
+
+### ⚠ The agent's primary model: top-level `modelConfigurationRequestList` — EVERY agent, EVERY channel
+
+**Every agent you POST or PUT must carry `modelConfigurationRequestList`, or it ends up with no model at
+all** — `modelConfigurationResponseList: []`, a blank *Agent → Advanced → Language Model* panel
+(Provider/Credential/Model all empty) and an agent the user cannot run. This applies to **chat, voice and
+structured-output alike**; it is not a chat-only concern.
+
+It is a **top-level array on `AiAgentRequest`**, and all three keys are required:
+
+```jsonc
+"modelConfigurationRequestList": [
+  { "id": "69fc2c6ece21b786c1e3625f",     // the AiModel record id from GET /aimodel — REQUIRED
+    "providerCode": "commotion",
+    "modelCode": "commotion-3.6-35b" }
+],
+"advancedSettingsRequest": {               // sibling — tokens/temp/retries/fallback ONLY
+  "languageModelSettingsRequest": {
+    "maximumOutputTokens": 1024,           // REQUIRED — omitting it 400s the create
+    "numberOfRetries": 1,
+    "reasoningEffortEnabled": false,
+    "temperature": 0.2 }
+}
+```
+
+**The trap (verified live 2026-08-03).** `LanguageModelSettingsRequest` holds **no primary-model field** —
+only `maximumOutputTokens`, `temperature`, `numberOfRetries`, `reasoningEffort*` and
+`fallbackModelConfigurationRequestList`. Nesting the model inside it (e.g.
+`languageModelSettingsRequest.languageModelConfigurationRequest`, mirroring the *worker* shape) is
+**silently dropped**: the call returns `200`, the sibling settings round-trip, and only
+`modelConfigurationResponseList: []` reveals the loss. Always read that array back after writing.
+
+Note the deliberate asymmetry with the worker: at **worker** level the model *is* nested
+(`workerAdvancedSettingsRequest.workerLanguageModelSettingsRequest.workerLanguageModelConfigurationRequest`,
+which does round-trip). Agent ≠ worker here. Get `id`/`modelCode`/`providerCode` from `GET /aimodel`, and
+keep the provider **`commotion`** (see `aiworker-lifecycle.md`, "Providers and credentials").
+
+### Auto-provisioned agents get the platform default — they do NOT inherit the worker's model
+
+Verified live 2026-08-03, in both directions:
+
+| Worker | Worker-level LLM set to | Default agent was born with |
+|---|---|---|
+| chat, `SINGLE_AGENT` | `commotion-3.6-27b` | `commotion-3.6-35b` |
+| voice, `SINGLE_AGENT` | `commotion-3.6-27b` (voice LLM) | `commotion-3.6-35b` |
+
+So **neither chat nor voice agents inherit the worker's model choice** — every auto-provisioned agent
+(Chat / Voice / Structured Output) is born with the platform-default model `commotion` /
+`commotion-3.6-35b` (the `isDefault: true` entry in `/aimodel`), plus `maximumOutputTokens: 1024`,
+`temperature: 0.1`, `numberOfRetries: 0`, and **disabled**. If you want the worker's model actually used
+by the agent, set it on the agent explicitly.
+
+This is why the **delete-default-then-POST** path (required to make a prompt UI-visible, above) is where
+the model goes missing: the auto-provisioned agent had a default, and your replacement inherits nothing.
+Whenever you delete-and-re-POST, re-send `modelConfigurationRequestList` along with the prompt.
 
 `version` is the worker version you're editing (e.g. `0` for a fresh worker, or the draft's version
 when editing a live worker's draft).

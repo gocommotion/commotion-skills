@@ -39,21 +39,54 @@ and the failing-scenario analysis — feeds `commotion-improve-worker` (step 4),
 whether to keep iterating. The headline **eval score is `SimulationResponse.passRate`** — a
 **percentage (0–100)**, not a 0–1 fraction (verified live: an all-pass run returns `100.0`).
 
-## Prerequisites (verified live — evals are voice-only + need a live runtime)
+## Prerequisites (verified live — every channel simulates; you need a live runtime)
 
-Two hard constraints, both confirmed against dev3:
+1. **Simulations work for VOICE, CHAT *and* STRUCTURED-OUTPUT workers — always use `/simulation/run`,
+   never a live session.** There is **one** simulation endpoint for every channel; the channel comes
+   from each **scenario's `aiAgentChannelType`** (`VOICE` or `CHAT`), not from a different endpoint.
+   Verified live 2026-08-03: a chat worker returned `passRate 100.0` and a `STRUCTURED_OUTPUT` worker
+   returned `scenarioEvaluationResult: "PASS"`, both through `POST /simulation/run`, which echoes
+   **`onlyChatScenarios: true`** for an all-chat batch. `GET /scenario/dropdown-config` lists
+   `channelType: [VOICE, CHAT]`.
 
-1. **Simulations/evals only work for VOICE workers.** Running scenarios against a **chat** worker
-   fails every run with a generic *"An error has occurred during simulation. Please contact support…"*
-   (quality/latency null, `passRate` 0). If the target isn't voice-enabled, it cannot be evaluated
-   this way — make it a voice worker first (see `commotion-create-worker`; voice can be enabled on a
-   draft). The simulated caller **personalities must also be voice-enabled** (`voiceEnabled:true` + a
-   voice) or the sim has no caller audio.
+   > ⚠ **A `STRUCTURED_OUTPUT` agent is on the CHAT channel** — the schema says `aiAgentChannelType`
+   > *"Must be CHAT for CHAT_AGENT / STRUCTURED_OUTPUT and VOICE for VOICE_AGENT"*, and a freshly
+   > provisioned SO agent reports `aiAgentChannelType: "Chat"`. So SO scenarios take
+   > `aiAgentChannelType: "CHAT"`.
+
+   **Never substitute a live run for a simulation.** `POST /aiworker/run` and ad-hoc chat sessions are
+   **not** simulations: Call Analyzer tags them `callMode: COPILOT` and they land under Observability's
+   **live** filter, produce no `scenarioEvaluationResult`, no `passRate`, and nothing under
+   **Simulations → Runs**. If you catch yourself inventing a session id to "test" a chat worker, stop —
+   create a scenario and run `/simulation/run` instead.
+
+   **Personality voice rule is channel-specific.** A **voice** scenario needs a `voiceEnabled: true`
+   personality with a voice, or the caller never speaks. A **chat/SO** scenario needs the opposite —
+   `voiceEnabled: false` is correct and sufficient (verified: the passing chat + SO runs above both used
+   a `voiceEnabled: false` personality).
+
 2. **The worker version must have a running runtime — i.e. the worker must have been deployed at
    least once.** A worker that was **never deployed** returns *"Worker is not available for worker
    Id: …"* (from `/aiworker/run`) and its sims/AI-generation fail. Once the worker has a live version,
    a **draft version of it CAN be simulated** (verified: draft v1 simulated while v0 was live) — which
    is what makes the draft-only improve loop work. So: deploy once, then iterate+simulate on drafts.
+
+### ⚠ Don't read a generic simulation error as "this channel isn't supported"
+
+A failing run reports only *"An error has occurred during simulation. Please contact support with
+reference number …"* — with `duration 0.0` and `scenarioRunStatusLabel: "Simulation Error"`. That
+message says nothing about the channel. Verified live 2026-08-03: on the worker that produced it, the
+simulation had in fact started correctly and injected the scenario's `userScript` verbatim; the real
+cause was in the session's own error list —
+
+```
+litellm.AuthenticationError: Incorrect API key provided: sk-…  model: openai/qwen3-next
+```
+
+a **worker LLM credential fault**, not a channel limitation. Before concluding anything from a generic
+simulation error, read the session: `commotion_analyzer { "path": "/api/chat/session/<scenario-run-id>" }`
+for a chat/SO run (`errors[]` + `runs[].error`), or `/api/calls?requestId=<scenario-run-id>` for voice.
+An earlier revision of this skill mis-generalised exactly this error into a false "voice-only" rule.
 
 ## When to use this
 
@@ -337,6 +370,13 @@ below, summarize the failing scenarios and their reasons and hand off to `commot
 
 - **The eval score is `SimulationResponse.passRate`** — report it with the raw count and the
   per-scenario reasons, not just a number.
+- **Every channel simulates — always via `/simulation/run`.** Voice, chat and structured output all run
+  here; the channel is the scenario's `aiAgentChannelType` (`CHAT` covers chat *and* SO). Never substitute
+  `POST /aiworker/run` or a hand-made chat session: those are live runs (`callMode: COPILOT`), they appear
+  under Observability's **live** filter, and they produce no pass-rate.
+- **A generic simulation error is not a channel verdict** — read the run's own session
+  (`/api/chat/session/<scenario-run-id>` → `errors[]`, or `/api/calls?requestId=`) before concluding.
+  A worker LLM credential fault presents identically.
 - Scenario-goal evaluation is automatic; eval-metrics are optional, secondary signal — don't block the
   run on them.
 - **Sequential runs** — always check `GET /scenario-run/active` before starting; respect

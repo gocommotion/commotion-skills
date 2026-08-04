@@ -17,7 +17,8 @@ deploy call behaves unexpectedly. Field *shapes* come from `commotion_schema` `{
 | GET | `/aiworker` | list (live + draft) |
 | GET | `/aiworker/{id}` | retrieve **live** (`?version=N` for a specific version) |
 | GET | `/aiworker/{id}/versions` | version history |
-| GET | `/aiworker/metadata` · `/aimodel` | valid values / supported models |
+| GET | `/aiworker/metadata` · `/aimodel` | valid values / supported **language** models |
+| GET | `/aiworkervoice?providerId=&modelId=&languageId=&accentId=` | **the TTS voice catalogue** (`voiceId`, `voiceName`, sample audio) — one word, no separator |
 
 ## State machine
 
@@ -87,16 +88,99 @@ worker (it's rejected). Inspect the exact fallback field names with `commotion_s
 
 **Verified-good en+hi block (mirror this — created + deployed live, S2S):** `provider:
 "commotion-tts"`, `model: "commotion-laya-v1-5"`, `voiceId:
-"d6d81480-227c-41cd-af4e-f483262cef0b"`. `commotion-laya-v1-5` covers `en, hi, kn, mr, ta, te, ml,
-bn, pa, gu`. Sending **only** `voiceAgentPipelineType` + `workerVoiceConfiguration` on create is
-enough — the transcript/LLM sub-blocks default. The full provider→model→language map lives in
+"d6d81480-227c-41cd-af4e-f483262cef0b"` (that UUID is the voice **Poornima** — pick deliberately from
+`GET /aiworkervoice`, don't paste it blindly; see "Choosing a voice" below).
+`commotion-laya-v1-5` covers `en, hi, kn, mr, ta, te, ml, bn, pa, gu`. Sending **only**
+`voiceAgentPipelineType` + `workerVoiceConfiguration` on create is enough — the transcript/LLM
+sub-blocks default. The full provider→model→language map lives in
 `GET /aiworker/metadata` → `voiceConfig.voicePipelineTypeConfig`.
+
+## Providers and credentials — use `commotion-*` only (verified live 2026-08-03)
+
+**Rule: over the API, always pick a Commotion first-party provider for TTS, STT and the LLM. Never set a
+non-Commotion provider, and never set a provider/model without its credential.**
+
+`GET /aiworker/metadata` → `voiceConfig` offers external providers (TTS: `eleven-labs`, `cartesia`,
+`sarvam`, `smallest-ai`; STT: `eleven-labs`, `sarvam`), and `/aimodel` offers `openai`, `anthropic`,
+`cerebras`, `vayu`. **Those all require a client provider credential, and the API gives you no way to
+attach one:**
+
+| Block | Schema | Credential field? |
+|---|---|---|
+| TTS voice | `WorkerVoiceConfigurationRequest` | **none** |
+| STT | `WorkerTranscriptConfigurationRequest` | **none** |
+| Voice LLM | `WorkerLLMConfigurationRequest` | **none** |
+| Worker primary LLM | `WorkerLanguageModelConfigurationRequest` | **none** |
+| Worker LLM *fallback* | `WorkerFallbackModelConfigurationRequest` | `credentialId` ✅ |
+| Agent LLM *fallback* | `FallbackModelConfigurationRequest` | `credentialId` ✅ |
+| Simulator / eval-metric LLM | `LLMConfig` | `voiceProviderCredentialId` ✅ |
+
+`AiModelResponse.credentialId` is documented as *"ID of the ClientProviderCredential this model is tied
+to. **Null for platform models**"*, and there is **no endpoint that lists or creates those credentials**
+(`/ai-worker-tool/credentials` is the SaaS-connector plane — unrelated). So a non-Commotion STT/TTS/LLM
+choice can only ever be written **credential-less**.
+
+**The backend does not stop you — that is the trap.** Verified live: a `PUT /aiworker` setting
+`provider: "eleven-labs"` for both TTS (`eleven_multilingual_v2`) and STT (`scribe_v2`) returned
+**`200` with no error and no warning**, and the round-tripped response contained **no credential field
+at all**. In the UI that renders as *Provider: Eleven Labs · Credential: "Select credential" (blank) ·
+Model: filled* — a saved-but-unrunnable config.
+
+So:
+- **Do** use `commotion-tts` (TTS), `commotion-llm` / `commotion-asr` (STT), `commotion` (LLM). These are
+  platform models, need no credential, and are the only combination that works end-to-end over the API.
+  Verified-good trio: TTS `commotion-tts` / `commotion-laya-v1-5`; STT `commotion-llm` / `commotion-omni`;
+  LLM `commotion` / `commotion-3.6-35b` (the `isDefault: true` model in `/aimodel`).
+- **Don't** write a non-Commotion provider "to be fixed later", and **never backfill the model while
+  leaving the credential blank** — a half-set block is worse than an unset one, because the defaults no
+  longer apply and nothing flags it.
+- If the user explicitly asks for ElevenLabs/Cartesia/Sarvam/OpenAI/Anthropic for STT/TTS/LLM: **say it
+  must be done in the UI** (the credential can't be bound over the API), leave the block on Commotion
+  or unset, and change nothing else. Only a **fallback** LLM can take a BYOK `credentialId`, and only
+  when you already have that id — find it with `GET /aimodel?credentialId=<id>`.
+
+## Choosing a voice — `GET /aiworkervoice` (the voice catalogue)
+
+**Voices come from `GET /aiworkervoice`, not `/aimodel`.** `/aimodel` returns *language models*; it has
+no voices in it. The endpoint is `/aiworkervoice` — one word, no separator, which is why searching for
+`/voice` finds nothing and concluding "voices are UI-only" is wrong.
+
+```
+GET /aiworkervoice?providerId=commotion-tts&modelId=commotion-laya-v1-5   # filter to the worker's TTS model
+    # also accepts: voiceId, languageId, accentId, pageNumber, pageSize
+```
+
+Each record gives **`voiceId`** (the UUID for `workerVoiceConfiguration.voiceId`), **`voiceName`**, a
+prose `description`, `languageIds`, `accentIds`, `modelIds`, and `languageIdToVoiceUrlMap` — per-language
+sample audio URLs you can offer the user to listen to. Filter by `providerId`+`modelId` so every
+returned voice is actually valid for the configured TTS model; it works for external providers too.
+
+`commotion-tts` / `commotion-laya-v1-5` currently has **five** voices (verified live), all covering
+`en, hi, kn, mr, ta, te, ml, bn, pa, gu`:
+
+| `voiceName` | `voiceId` |
+|---|---|
+| Komal (female, upbeat) | `1b50c54f-2fd1-4ccf-9c33-ab2ca8ce94a7` |
+| Raj (male, authoritative) | `04bb4f44-164f-4e39-bb8e-69d5ba134d65` |
+| Poornima (female, warm) | `d6d81480-227c-41cd-af4e-f483262cef0b` |
+| Tanya (female, refined) | `cb28ee98-e1b2-4f8d-8dc5-039d11486013` |
+| Abhay (male, calm) | `f4af8e02-9469-4332-b9cf-d3e1590363f9` |
+
+**Always query the catalogue rather than reusing a hardcoded id** — this table is a fallback, not the
+source of truth, and `d6d81480…` (quoted elsewhere as "verified-good") is simply Poornima. When the user
+says "choose a voice" or "use a different voice", list the candidates with their names and descriptions,
+let them pick, then set `voiceId`; don't claim the catalogue is unavailable.
 
 Notes:
 - The `workerVoiceConfiguration` sub-object **requires** `model` / `provider` / `voiceId`. Confirm the
   valid pipeline/provider/model/language combinations in `GET /aiworker/metadata` (`voiceConfig`),
-  voices in `GET /aimodel`, or omit the whole voice block on create and let backend defaults stand,
-  then add languages with an update.
+  **voices in `GET /aiworkervoice`** (see above), or omit the whole voice block on create and let
+  backend defaults stand, then add languages with an update.
+- ⚠ **`voiceConfig…accentIdToAccentDropdownOutputMap` is language accents, not voices** (`English-Indian`,
+  `Hindi`, `Marathi`, …). It feeds `workerVoiceConfiguration.language`; it will never give you a `voiceId`.
+- **TTS provider availability depends on the pipeline.** `SPEECH_TO_SPEECH` and `COLLOQUIAL` expose only
+  `commotion-tts`; `HALF_CASCADE` also exposes the external providers (which you should not use — see
+  above). Read `voiceConfig.voicePipelineTypeConfig[].providerIdToModelIdsMap` for the live map.
 - **Request vs response field names differ.** The request uses `…Request` suffixes
   (`workerVoiceSettingsRequest`, `workerLLMConfigurationRequest`); a list/retrieve *response* uses
   `…Response`. Don't copy a response back as a request — map field-by-field against
