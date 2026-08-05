@@ -1,5 +1,73 @@
 # Changelog
 
+## 2026-08-05 — 1.5.2 — The web crawler shipped: it is real, it lives on `km-setting`, and 1.5.1's "UI-only crawler" rule was wrong
+
+The backend added a **web crawler API**, which invalidates the headline claim of 1.5.1 below. The old
+golden rule 9 — *"NEVER use `WEBSITE_CRAWL` … there is no crawler behind it"* — was correct when written
+but is now actively harmful: it would steer you into hand-uploading page snapshots when a real crawler
+exists. Verified live against dev3 on 2026-08-05 with four purpose-built workers.
+
+- **The crawler is configured on the `km-setting` plane, not the knowledge plane.** `webCrawlerConfig` was
+  added to `KMSettingUpdateRequest`, so the whole feature is one call:
+  `PUT /aiworker/km-setting/setting/{settingId}` with `{entityId, webCrawlerConfig: {...}}`. Fields:
+  `enabled`, `seedUrls`, `crawlDepth` (1–5), `maxPages` (max 100/run), `sameDomainOnly`,
+  `excludeUrlPatterns`, `syncFrequency` (`DAILY`/`WEEKLY`/`MONTHLY`), `authType`
+  (`NONE`/`BASIC`/`COOKIE`), `authCredentials`, `lightweightMode`, `respectRobotsTxt`; plus read-back
+  `lastCrawlInfo` (`lastCrawlStatus` `PENDING`→`CRAWLING`→`INDEXING`→`COMPLETED`/`PARTIAL`/`FAILED`, and
+  `pagesDiscovered`/`Crawled`/`Indexed`/`Skipped`/`Failed`/`Removed`). Note the **path list is unchanged at
+  220** — the crawler added no endpoint, only a schema block, which is why a path-only sweep misses it.
+- **The crawler creates and indexes its own knowledge entries — you never touch the knowledge plane.** A
+  completed run took **35s** (`COMPLETED`, `pagesCrawled: 1`, `pagesIndexed: 1`) and produced an item named
+  from the page's real `<title>` (`Quick Start – React`), `sourceType: MARKDOWN`, `fileName`
+  `Quick_Start___React.md`, a **system**-generated blob key (`demo/<orgId>/system/<rand>-https___react.dev_learn.md`),
+  already at `Completed`. So no `file-upload`, no `/knowledge/bulk`, no `/knowledge/index` for a crawl.
+- **Hand-creating a `WEBSITE_CRAWL` item still fails, and that is the part 1.5.1 got right.**
+  `POST /knowledge/bulk` with a URL in `sourceUrlIdentifier` is accepted `200`, lands `Draft`, flips to
+  `Failure` — the URL is percent-encoded onto the blob container (golden rule 5). Reproduced on two workers;
+  enabling `webCrawlerConfig` first changes nothing. The two planes are unrelated.
+- **There is no manual crawl trigger over the API.** The UI has a "Trigger Web Crawler Sync" button with no
+  API counterpart: no crawl route among the 220 paths, `/v3/api-docs/swagger-config` exposes only the
+  `public` group, and six plausible routes all return a generic Spring `404`. **Over the API a crawl only
+  lands on its schedule (`DAILY` ≈ midnight)** — the skills now require saying so, and offering the
+  `TEXT_UPLOAD` snapshot recipe when the user needs content immediately.
+- **⚠ New platform bug found: a partial `chunkingConfig` on the `km-setting` PUT permanently destroys the
+  worker's KB index.** `chunkingConfig` has six file-type blocks; send it with any missing and the absent
+  ones become `null`, a new `indexName` is minted, index creation fails
+  (`"Please modify settings for index creation"`), and `indexId`/`collectionName` are wiped. **Unrecoverable**
+  — re-PUTting all six still fails. Isolated by elimination across three workers: `entityType`,
+  `collectionName`, `indexingConfig`, `embeddingConfig` and repeat PUTs are each individually harmless.
+  Its nastiest consequence is silent: on a worker in this state the **crawl still runs and fetches**, but
+  its item sticks at `Draft` and is never indexed. The skills now mandate the minimal PUT (only the fields
+  being changed) and explicitly warn against the "GET it and send it all back" pattern, which is what
+  triggers it.
+- **`commotion_schema` can serve a stale spec.** `KMSettingUpdateRequest` came back *without*
+  `webCrawlerConfig` from cache and only revealed it with `{"refresh": true}` — worth knowing before
+  concluding a field doesn't exist.
+- **Two smaller findings.** `pagesDiscovered` returns `null` on a `COMPLETED` run while every other counter
+  populates; and `lightweightMode: true` skips JS rendering, so a `crawlDepth: 1, maxPages: 5` crawl of a
+  SPA (`react.dev/learn`) discovers no links and yields exactly one page.
+- **The skills now require telling the user what was arranged.** Crawling is the one knowledge source where
+  a successful setup looks identical to a silent failure: you write a config, get a `200`, and the KB stays
+  empty. So `SKILL.md` (Phase 7 + Principles) and a new **"REQUIRED — report the arrangement back to the
+  user"** block in `knowledge-and-rag.md` mandate saying that crawling is configured in the worker's
+  settings, naming the **actual** frequency (daily/weekly/monthly), and stating that entries are created and
+  indexed automatically — with an empty knowledge list until the first run being expected, not a failure.
+- **Pre-deploy readiness corrected for crawler-only workers.** The Phase 9 gate demanded every knowledge
+  item be indexed, which a crawler-configured worker cannot satisfy — it legitimately has **zero** items
+  until its first crawl. An empty list is no longer a readiness failure there; instead verify `km-setting`
+  `status: SUCCESS` + `webCrawlerConfig.enabled`, and warn that the worker has no grounding until the crawl
+  runs.
+- Rewritten in `commotion-create-worker`: golden rules 2/9 and the `aiWorkerKnowledgeType` enum note, a new
+  **"Web crawler"** section, the `km-setting` section (crawler + the `chunkingConfig` warning), the
+  endpoints table, the reframed "Fetched web page" recipe (now a snapshot, not a crawler substitute), plus
+  Phase 7's source list and two Principles in `SKILL.md`. Also fixed the golden rules' numbering, which ran
+  6, 9, 10, 7, 8.
+
+**Still unverified:** that the `DAILY` schedule fires *on its own*. Both crawls observed on 2026-08-05 were
+manual UI syncs (the 07:16 UTC run reconciles exactly with the UI's "Job completed at 12:46 PM" IST). A
+clean API-only worker — `6a72e5030e114ddf3fc81fa9`, never opened in the UI, `lastCrawlInfo: null`, zero
+knowledge items — is parked on dev3 awaiting its first scheduled run to confirm.
+
 ## 2026-08-03 — 1.5.1 — QA bug sweep: chat/SO simulations, the UI-only crawler, Commotion-only providers, the voice catalogue, and the agent's missing model
 
 Five QA-reported bugs, all of them **skill defects rather than platform defects** — the API supported the
@@ -39,7 +107,10 @@ workers, and each fix names the evidence.
   is a **voice** rule; for chat/SO, `false` is correct and sufficient — both passing runs above used a
   `voiceEnabled: false` persona. Previously stated unconditionally, which pushed toward voice-converting
   chat workers.
-- **`WEBSITE_CRAWL` is unusable over the API — bug 2.** Searching the whole spec (220 paths) there is **no
+- **`WEBSITE_CRAWL` is unusable over the API — bug 2.** *(Partly superseded by 1.5.2: the backend has since
+  added a real crawler on the `km-setting` plane. The "no crawler exists / UI-only" conclusion below is no
+  longer true; the "never hand-create a `WEBSITE_CRAWL` item" prohibition still is.)* Searching the whole
+  spec (220 paths) there is **no
   crawl endpoint and no crawl-config field anywhere**; `WEBSITE_CRAWL` exists only as an enum value. The
   crawler is a UI-only service. Confirmed by a controlled A/B on one worker against the same page
   (`https://react.dev/learn`): `WEBSITE_CRAWL` + a raw URL → **`Failure`**; fetch-then-`TEXT_UPLOAD` →
