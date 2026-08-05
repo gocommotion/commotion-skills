@@ -20,6 +20,7 @@ Storage via `curl`** — it bypasses the backend entirely, so it is **not** an M
 | PUT | `/aiworker/knowledge/{id}` | rename an item (`{"name": ...}`) |
 | DELETE | `/aiworker/knowledge` | delete items (array of ids in body) |
 | POST | `/aiworker/file-upload/text` · `/aiworker/file-upload/url` · DELETE `/aiworker/file-upload/delete` | the file plane |
+| PUT | `/aiworker/km-setting/setting/{settingId}` | **the web crawler** (`webCrawlerConfig`) — a different plane; see "Web crawler" |
 
 Item shape: `commotion_schema` `{ "schema_name": "CreateAiWorkerKnowledgeItemRequest" }`.
 
@@ -28,8 +29,10 @@ Item shape: `commotion_schema` `{ "schema_name": "CreateAiWorkerKnowledgeItemReq
 1. **Grounding is automatic — there is no RAG toggle.** Once knowledge is created **and indexed**
    for a worker's `aiWorkerId`, the worker grounds on it. Nothing on `AiWorkerRequest`/`AiAgentRequest`
    turns RAG on or off.
-2. **Every source ends in create → index.** You create knowledge item(s) (`POST …/knowledge/bulk`),
-   then index their ids (`POST …/knowledge/index`). The one exception is a **global KB**, already published.
+2. **Every source you create ends in create → index.** You create knowledge item(s)
+   (`POST …/knowledge/bulk`), then index their ids (`POST …/knowledge/index`). **Two exceptions:** a
+   **global KB** (already published), and the **web crawler** (it creates *and* indexes its own items —
+   you only write its config; see rule 9).
 3. **Indexing is synchronous but not instant.** `POST …/knowledge/index` returns a boolean immediately,
    but the material becomes searchable a little later — **poll `GET /aiworker/knowledge?aiWorkerId=…`
    and wait until each item's `aiWorkerKnowledgeStatus` is ready** before relying on it / deploying.
@@ -46,38 +49,30 @@ Item shape: `commotion_schema` `{ "schema_name": "CreateAiWorkerKnowledgeItemReq
 6. **The file must be readable on the machine Claude runs on.** The PUT reads bytes from a local
    path. If the user gives a URL, download it to a local file first, then upload — there is no
    server-side "ingest from URL" in this flow.
-9. **⚠ NEVER use `aiWorkerKnowledgeType: "WEBSITE_CRAWL"` over the API — there is no crawler behind it.**
-   `WEBSITE_CRAWL` exists only as an enum value on the knowledge-type list. Searching the whole dev3
-   spec (220 paths) there is **no crawl endpoint and no crawl-config field anywhere** — no seed URL,
-   depth, or page-limit property in any schema. The crawler is a **UI-only** service; the API exposes
-   only the final knowledge record, which must already point at fetched content in blob storage.
-
-   Verified live 2026-08-03 (controlled A/B on one worker, same source page `https://react.dev/learn`):
-
-   | Attempt | `aiWorkerKnowledgeType` | `sourceUrlIdentifier` | Resulting status |
-   |---|---|---|---|
-   | crawl | `WEBSITE_CRAWL` | `https://react.dev/learn` | **`Failure`** |
-   | correct | `TEXT_UPLOAD` | `demo/…/1785740968209-yuiL_reactlearn.txt` | **`Completed`** |
-
-   The crawl attempt is accepted with **`200`** (the enum is valid) and lands at `Draft`, then flips to
-   `Failure` on index. Its `sourceUrl` shows the mechanism exactly — the raw URL got percent-encoded and
-   appended to the container:
-   `https://…blob.core.windows.net/mvmt-dev-digitalassets-storage-data/https%3A%2F%2Freact.dev%2Flearn`.
-
-   **So to get a web page into a KB: fetch it yourself, convert it to text, and upload it** via
-   `/file-upload/text` (or `/file-upload/url` for a real file) with
-   `aiWorkerKnowledgeType: "TEXT_UPLOAD"` / `"DOCUMENT_UPLOAD"` — the "Fetched web page" recipe below.
-   Tell the user plainly that the platform's own crawler is UI-only and you ingested a snapshot
-   instead; don't silently present it as a crawl. If a `WEBSITE_CRAWL` item is already sitting at
-   `Failure`, delete it (`DELETE /aiworker/knowledge` with `[id]`) rather than leaving it in the KB.
-10. **`pageNumber` is 0-based on `GET /aiworker/knowledge`.** `pageNumber=1` on a worker with one page
-    of items returns `[]` — which reads as "no knowledge" and is not. Start at `pageNumber=0`.
 7. **Status fields are human-readable labels, not raw enums.** `aiWorkerKnowledgeStatus` reads
    `"Draft"` → `"In Progress"` → ready; a fresh bulk item starts at `"Draft"`, and stays `"Draft"`
    until you index it.
 8. **Each grounded agent must reference the KB in its own prompt.** Worker-level attach does *not*
    bind it to an agent — embed the mention token `[knowledge:<name>|id:<id>]` in the agent's
    `instructions` (see "Binding knowledge to an agent" below).
+9. **⚠ NEVER hand-create a `WEBSITE_CRAWL` knowledge item — but the crawler itself is real.**
+   There *is* a working web crawler; it just isn't driven from the knowledge plane. You configure it on
+   the **`km-setting`** plane (`webCrawlerConfig`) and it creates its own knowledge entries. See
+   "Web crawler" below — that section is the whole story.
+
+   What fails is creating the item yourself. `POST /aiworker/knowledge/bulk` with
+   `aiWorkerKnowledgeType: "WEBSITE_CRAWL"` and a URL in `sourceUrlIdentifier` is accepted with **`200`**
+   (the enum is valid), lands at `Draft`, then flips to **`Failure`** on index — because
+   `sourceUrlIdentifier` is always a blob key (rule 5), so the URL gets percent-encoded and appended to
+   the container:
+   `https://…blob.core.windows.net/mvmt-dev-digitalassets-storage-data/https%3A%2F%2Freact.dev%2Flearn`.
+
+   Verified live 2026-08-05 on two separate workers — identical `Failure` both times, and enabling
+   `webCrawlerConfig` first does **not** change it. The crawl plane and the bulk plane are unrelated:
+   **never call `/knowledge/bulk` (or `/file-upload/*`, or `/knowledge/index`) for a crawl.** If a
+   `WEBSITE_CRAWL` item is sitting at `Failure`, delete it (`DELETE /aiworker/knowledge` with `[id]`).
+10. **`pageNumber` is 0-based on `GET /aiworker/knowledge`.** `pageNumber=1` on a worker with one page
+    of items returns `[]` — which reads as "no knowledge" and is not. Start at `pageNumber=0`.
 
 ## The knowledge item (`CreateAiWorkerKnowledgeItemRequest`)
 
@@ -88,8 +83,8 @@ Required: **`aiWorkerId`**, **`name`**, **`fileName`**, **`sourceUrlIdentifier`*
 - **`sourceType`** — `HTML`, `PDF`, `DOC`, `PPT`, `VIDEO`, `IMAGE`, `CSV`, `XLSX`, `TEXT`, `MARKDOWN`.
 - **`aiWorkerKnowledgeType`** — e.g. `TEXT_UPLOAD`, `DOCUMENT_UPLOAD`, `KNOWLEDGE_BASE`,
   `WEBSITE_CRAWL`, `CLOUD_IMPORT`, … Use **`TEXT_UPLOAD`** for inline text *and for fetched web pages*,
-  **`DOCUMENT_UPLOAD`** for files. **`WEBSITE_CRAWL` is unusable over the API — see golden rule 9**;
-  it is accepted then fails to index.
+  **`DOCUMENT_UPLOAD`** for files. **Never pass `WEBSITE_CRAWL` yourself — see golden rule 9**; the
+  crawler sets that type on the entries *it* creates (see "Web crawler").
 - **`category`** — `FAQ`, `TROUBLESHOOTING`, `MANUAL`, `VIDEO`.
 
 `fileType` on the file-upload bodies is `IMAGE` / `VIDEO` / `AUDIO` / `OTHER` (use `OTHER` for text/docs).
@@ -121,7 +116,13 @@ POST /aiworker/knowledge/index  [ "<item id>" ]
 # poll until ready
 ```
 
-**Fetched web page (the substitute for the UI-only crawler — verified live):**
+**Fetched web page (a one-off snapshot — NOT the crawler; verified live):**
+
+Use this when you want **one specific page, indexed right now**. The crawler is the right tool for a
+site (or for content that should stay fresh), but over the API it only runs on its schedule — so if the
+user needs the content usable this minute, snapshot it here and say plainly that you ingested a
+point-in-time copy rather than a crawl. For a whole site, prefer "Web crawler" below.
+
 ```
 # 1. fetch + strip to text YOURSELF (bash/curl, not an MCP call). Keep the source URL in the text
 #    so the grounding stays attributable:
@@ -136,9 +137,104 @@ POST /aiworker/knowledge/bulk  [{ aiWorkerId:<id>, name:"React Learn (react.dev)
 POST /aiworker/knowledge/index  [ "<item id>" ]
 # poll GET /aiworker/knowledge?aiWorkerId=<id>&pageNumber=0 until "Completed"
 ```
-Reached `Completed` on the same page whose `WEBSITE_CRAWL` attempt reached `Failure`. For a PDF or other
-binary at a URL, download it and use the **Uploaded document** recipe (`/file-upload/url` + the Azure
-`curl` PUT) instead.
+Reached `Completed` on the same page whose hand-made `WEBSITE_CRAWL` attempt reached `Failure`. For a PDF
+or other binary at a URL, download it and use the **Uploaded document** recipe (`/file-upload/url` + the
+Azure `curl` PUT) instead.
+
+## Web crawler (`webCrawlerConfig`) — verified live 2026-08-05
+
+The crawler is real and it works. It lives on the **`km-setting`** plane, not the knowledge plane, which
+is why it's easy to miss. **Configuring it is the entire job**: the crawler fetches the pages, converts
+them to markdown, uploads them to blob storage itself, creates the knowledge items, and indexes them.
+
+> **You make exactly one call.** No `/file-upload/*`, no `/knowledge/bulk`, no `/knowledge/index` —
+> doing any of those for a crawl is the golden-rule-9 mistake and produces a `Failure` item.
+
+```
+GET /aiworker/km-setting/<workerId>            # read settingId; confirm status is SUCCESS
+PUT /aiworker/km-setting/setting/<settingId>   # { entityId, webCrawlerConfig: {...} }   <-- the only call
+# then WAIT for the schedule; poll GET /aiworker/km-setting/<workerId> -> webCrawlerConfig.lastCrawlInfo
+```
+
+**`WebCrawlerConfigRequest`** (ground it with `commotion_schema { "schema_name":
+"WebCrawlerConfigRequest" }`): `enabled`, `seedUrls` (array), `crawlDepth` (link levels from seed, 1–5),
+`maxPages` (per crawl run, max 100), `sameDomainOnly`, `excludeUrlPatterns` (array),
+`syncFrequency` (`DAILY` | `WEEKLY` | `MONTHLY`), `authType` (`NONE` | `BASIC` | `COOKIE`),
+`authCredentials`, `lightweightMode`, `respectRobotsTxt`.
+
+**Read-back only — `lastCrawlInfo`:** `lastCrawlStatus` (`PENDING` → `CRAWLING` → `INDEXING` →
+`COMPLETED` | `PARTIAL` | `FAILED`), `lastCrawlStartedAt` / `lastCrawlCompletedAt` (epoch ms),
+`lastCrawlErrorMessage`, and counters `pagesDiscovered` / `pagesCrawled` / `pagesIndexed` /
+`pagesSkipped` / `pagesFailed` / `pagesRemoved`. It is `null` until the first crawl runs.
+
+### What the crawler produces
+
+A crawl creates **one knowledge item per page, entirely on its own** — verified: a completed run took
+**35s** and returned `lastCrawlStatus: COMPLETED`, `pagesCrawled: 1`, `pagesIndexed: 1`. The item it made:
+
+| Field | Value |
+|---|---|
+| `name` | the page's real `<title>` — e.g. `Quick Start – React` (not your seed URL) |
+| `aiWorkerKnowledgeType` | `Website Crawl` |
+| `sourceType` | `MARKDOWN` (pages are converted to `.md`) |
+| `fileName` | slugged title — e.g. `Quick_Start___React.md` |
+| `sourceUrlIdentifier` | a **system**-generated blob key: `demo/<orgId>/system/<rand>-https___react.dev_learn.md` |
+| `aiWorkerKnowledgeStatus` | `Completed` — already indexed, no `/knowledge/index` call needed |
+
+### REQUIRED — report the arrangement back to the user
+
+The crawler is the one knowledge source where **nothing visible happens when you finish**. You write a
+config, get a `200`, and the KB stays empty — so a user who isn't told will reasonably think it failed, or
+will go looking for the documents you "forgot" to upload. **Never leave them in the dark: after the PUT
+succeeds, say plainly what you set up, that it runs on a schedule, and that the entries appear and index
+themselves.** State the actual frequency you configured, not a generic "periodically".
+
+Something like:
+
+> Web crawling is now configured in this worker's knowledge settings — seeded from
+> `https://docs.example.com`, following links 2 levels deep, up to 25 pages, same-domain only.
+> It runs **daily**. You don't need to upload anything: each crawl fetches the pages, creates a knowledge
+> entry per page, and indexes them automatically. The knowledge list is empty until the first run
+> completes — that's expected, not a failure. I can check `lastCrawlInfo` afterwards to confirm pages
+> crawled and indexed.
+
+Adjust for the schedule in play — `WEEKLY` and `MONTHLY` mean a correspondingly longer wait before the
+worker has any grounding at all, which is worth flagging explicitly if they intend to deploy sooner. And if
+they need the content usable **now**, offer the "Fetched web page" snapshot instead of leaving them waiting
+(the UI's Trigger button is the other option, but that's theirs to click, not yours).
+
+### Gotchas (all verified live)
+
+1. **There is NO manual trigger over the API.** The UI has a "Trigger Web Crawler Sync" button; the API
+   has no equivalent — no crawl route exists among the spec's 220 paths, `/v3/api-docs/swagger-config`
+   exposes only the `public` group, and six plausible routes (`…/setting/{id}/sync`,
+   `…/km-setting/{id}/crawl`, `/aiworker/web-crawler/sync`, `…/web-crawler/trigger`, …) all return a
+   generic Spring `404`. **So over the API a crawl happens only on its schedule (`DAILY` ≈ midnight).**
+   Tell the user this up front: after you save the config, nothing appears until the scheduled run. If
+   they need it now, either they click Trigger in the UI, or you snapshot the page with the
+   "Fetched web page" recipe.
+
+   *Verification status:* the crawl **mechanism** is confirmed end-to-end (config → fetch → markdown →
+   item → indexed), but the runs observed on 2026-08-05 were **manual UI syncs**, not scheduled ones — so
+   "the `DAILY` schedule fires on its own" is reported behaviour, not yet independently confirmed. Don't
+   promise the user a specific firing time; tell them it lands on the next scheduled run and check
+   `lastCrawlInfo` afterwards.
+2. **A broken index silently swallows the crawl.** If the worker's `km-setting` `status` is `FAILED`, the
+   crawl still runs and still fetches the page, but its item stays stuck at **`Draft`** and is never
+   indexed — the crawler reports success while nothing reaches the KB. **Always confirm `status:
+   "SUCCESS"` / `indexCreated: true` before relying on the crawler.** See the `chunkingConfig` warning
+   in the `km-setting` section below for the easiest way to break exactly this.
+3. **`lightweightMode: true` skips JS rendering, so SPAs yield one page.** On `https://react.dev/learn`
+   (a JS-rendered SPA) a `crawlDepth: 1, maxPages: 5` run crawled **1** page — no links were
+   discoverable without rendering. Leave `lightweightMode` **off** for anything JS-driven; only turn it
+   on for genuinely static HTML.
+4. **`pagesDiscovered` comes back `null`** even on a `COMPLETED` run while every other counter populates.
+   Don't drive logic off it; use `pagesCrawled` / `pagesIndexed`.
+5. **`webCrawlerConfig` merges — omitting it does not clear it.** A later PUT without the block leaves
+   the stored crawler config intact. To stop crawling, send `enabled: false` explicitly.
+6. **`commotion_schema` can serve a stale spec.** `KMSettingUpdateRequest` came back *without*
+   `webCrawlerConfig` from cache; `{"refresh": true}` returned it. If a field you expect is missing,
+   refetch before concluding it doesn't exist.
 
 **Existing global KB (already published — no index):**
 ```
@@ -184,7 +280,35 @@ rely on `PUT` to place the prompt; POST-create (or re-POST) the prompt-bearing a
 
 A worker's RAG **indexing/embedding/chunking** config is a separate, **auto-provisioned** setting (one
 per worker) — you don't create it, you edit it in place. The defaults are sensible; only touch this
-when the use case needs a specific chunking/embedding strategy.
+when the use case needs a specific chunking/embedding strategy. This is also where the **web crawler**
+lives (`webCrawlerConfig` — see the section above).
+
+> ### ⚠ A partial `chunkingConfig` permanently destroys the worker's index
+>
+> `chunkingConfig` has **six** file-type blocks (`pdf`, `markdown`, `csv`, `xlsx`, `docx`, `image`). Send
+> the field with any of them missing and the absent ones are set to **`null`**, a new `indexName` is
+> minted, index creation **fails**, and `indexId` / `collectionName` are wiped:
+>
+> ```
+> status: "FAILED", errorMessage: "Please modify settings for index creation", indexCreated: false
+> ```
+>
+> **It is not recoverable** — re-PUTting all six blocks still fails, and the worker's KB is dead (any
+> crawl or upload afterwards sticks at `Draft`, never indexed). Verified live 2026-08-05: reproduced on
+> two workers, isolated by elimination — `entityType`, `collectionName`, `indexingConfig`,
+> `embeddingConfig` and repeat PUTs are each individually harmless; **only the partial `chunkingConfig`
+> triggers it.**
+>
+> **So: PUT only the blocks you are actually changing, and omit `chunkingConfig` entirely unless you are
+> sending all six.** Omitted top-level blocks are merged/preserved, so the minimal PUT is safe and is what
+> you should default to:
+>
+> ```
+> PUT /aiworker/km-setting/setting/<settingId>   { "entityId": "<workerId>", "webCrawlerConfig": {...} }
+> ```
+>
+> Do **not** "read the GET response and send it all back" — that recipe is what breaks it, because the GET
+> shape and the PUT shape are not interchangeable. Read `status` back after every PUT.
 
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -194,12 +318,16 @@ when the use case needs a specific chunking/embedding strategy.
 
 **Verified live (dev3, 2026-07-20):** `GET /aiworker/km-setting/<workerId>` returns the setting object
 whose top-level keys include **`settingId`**, `entityId` (= the worker id), `indexName`, `status`,
-`indexId`, and the `indexingConfig` / `embeddingConfig` / `chunkingConfig` blocks. So the flow is:
+`indexId`, `indexCreated`, `collectionName`, `webCrawlerConfig`, and the `indexingConfig` /
+`embeddingConfig` / `chunkingConfig` blocks. So the flow is:
 `GET /aiworker/km-setting/<workerId>` → read `settingId` → `PUT /aiworker/km-setting/setting/<settingId>`
-with `KMSettingUpdateRequest` (`entityId`, `entityType`, `collectionName`, `indexingConfig`,
-`embeddingConfig`, `chunkingConfig` (per file-type: `pdf`/`markdown`/`csv`/`xlsx`/`docx`/`image`),
-`piiMaskingConfig`). Ground the exact shapes with `commotion_schema { "schema_name":
-"KMSettingUpdateRequest" }` and the metadata endpoint before writing.
+with `KMSettingUpdateRequest` — whose writable fields are `entityId`, `entityType`, `collectionName`,
+`indexingConfig`, `embeddingConfig`, `chunkingConfig` (per file-type:
+`pdf`/`markdown`/`csv`/`xlsx`/`docx`/`image`), `piiMaskingConfig`, and **`webCrawlerConfig`** — but
+**send only the fields you're changing** (see the warning above; a partial `chunkingConfig` is fatal).
+Ground the exact shapes with `commotion_schema { "schema_name": "KMSettingUpdateRequest", "refresh":
+true }` and the metadata endpoint before writing. Note `GET /aiworker/km-setting/metadata` carries **no**
+crawler options — the crawler's valid values come from `WebCrawlerConfigRequest` only.
 
 ## Where this sits in the create-worker flow
 

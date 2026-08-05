@@ -344,6 +344,17 @@ recipes (field shapes, enums, the presigned-PUT) are in `references/knowledge-an
   `POST /aiworker/knowledge/bulk` → `POST /aiworker/knowledge/index`.
 - **Existing global KB** → `GET /aiworker/knowledge/global` →
   `POST /aiworker/knowledge/by-global/{globalId}?aiWorkerId=<worker-id>` (already published — no index step).
+- **A website (crawl)** → a **different plane entirely**: `GET /aiworker/km-setting/<workerId>` → read
+  `settingId` → `PUT /aiworker/km-setting/setting/<settingId>` with
+  `{entityId, webCrawlerConfig: {enabled, seedUrls, crawlDepth, maxPages, syncFrequency, …}}`. That single
+  PUT is the whole job — **no `file-upload`, no `bulk`, no `index`** — the crawler creates and indexes its
+  own entries. But **it only runs on its schedule (no API trigger exists)**, so nothing appears until then.
+  **You MUST report this back**: say that crawling is configured in the worker's settings, name the actual
+  frequency (daily/weekly/monthly), and say the entries will be created and indexed on their own — an empty
+  knowledge list until then is expected, not a failure. Otherwise the user is left staring at an empty KB
+  wondering what broke. If they need the content now, snapshot the page as `TEXT_UPLOAD` instead.
+- **One specific web page, needed now** → fetch and strip it yourself, then upload as
+  `TEXT_UPLOAD` (the "Fetched web page" recipe) — a point-in-time snapshot, not a crawl. Say which it is.
 
 Run `commotion_schema` `{ "schema_name": "CreateAiWorkerKnowledgeItemRequest" }` first if unsure of the bulk item shape.
 Indexing is **synchronous** but the material isn't searchable instantly — **poll
@@ -481,6 +492,11 @@ Confirm with `GET /aiagent?workerId=<worker-id>&version=0` before deploying:
 - `MULTI_AGENT` → the agents the orchestrator needs are present and enabled.
 - If you attached knowledge (Phase 7) → every item's `aiWorkerKnowledgeStatus` is ready (not still
   indexing/failed), so the worker actually grounds on it from the first live conversation.
+  **Exception — a crawler-configured worker legitimately has zero items** until its first scheduled
+  crawl, so an empty knowledge list is *not* a readiness failure here. Instead verify
+  `GET /aiworker/km-setting/<worker-id>` shows `status: "SUCCESS"` and `webCrawlerConfig.enabled: true`,
+  and **tell the user the worker will have no grounding until the first crawl runs** — that's a real
+  deploy consideration, not a footnote.
 - If you attached tools (Phase 8) → `GET /ai-worker-tool?aiWorkerId=<worker-id>&version=0` shows them as expected.
 
 ## Phase 10 — Deploy  ·  ALWAYS ASK FIRST
@@ -565,11 +581,20 @@ Editing the live worker means revert-to-draft → edit the agent at the new draf
   providerCode}` from `/aimodel`) — chat, voice and SO alike. Agents inherit **nothing** from the worker's
   model choice, and mis-nesting this field inside `languageModelSettingsRequest` is dropped silently.
   Read `modelConfigurationResponseList` back to confirm.
-- **Voices come from `GET /aiworkervoice`, not `/aimodel`** — and the crawler has no API: a web page must
-  be fetched by you and uploaded as `TEXT_UPLOAD`/`DOCUMENT_UPLOAD`, never `WEBSITE_CRAWL`.
+- **Voices come from `GET /aiworkervoice`, not `/aimodel`.**
+- **The web crawler is configured on `km-setting` (`webCrawlerConfig`), never on a knowledge item.** That
+  one PUT is the whole job — the crawler creates and indexes its own entries. Never hand-create a
+  `WEBSITE_CRAWL` item; it always fails. There's **no manual trigger over the API**, so a crawl only
+  lands on its schedule (`DAILY` ≈ midnight). **This is the one knowledge source where finishing looks
+  like nothing happened, so always tell the user what you arranged** — crawling is set up in the worker's
+  settings, it runs daily/weekly/monthly (name which), and the entries create and index themselves; an
+  empty KB until the first run is expected. Snapshot the page as `TEXT_UPLOAD` if they need content
+  immediately. See `references/knowledge-and-rag.md`.
+- **Never send a partial `chunkingConfig` on the `km-setting` PUT** — it permanently and unrecoverably
+  destroys the worker's KB index. PUT only the fields you're changing.
 - **After each write, read the response back** rather than trusting the `200`. Several fields on this API
   are silently dropped when mis-shaped (agent model config) or silently accepted-but-broken
-  (non-Commotion providers, `WEBSITE_CRAWL`).
+  (non-Commotion providers, a hand-made `WEBSITE_CRAWL` item, a partial `chunkingConfig`).
 - Grounding needs both halves: knowledge must be **created and indexed** — attaching without
   indexing (or deploying before indexing finishes) means the worker has nothing to ground on.
 - Show every write before you make it; the user approves going live.
