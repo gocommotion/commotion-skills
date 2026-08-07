@@ -250,6 +250,10 @@ Read `references/repro-and-gates.md`. Build a scenario that recreates the defect
 4. **Poll to genuinely terminal**: `GET /simulation/<repro-sim-id>` until `completedScenarios ==
    totalScenarios`, then `GET /scenario-run?simulationId=<repro-sim-id>` and confirm no record is still
    in an `EVALUATION_*` state. Only then read the per-run `scenarioEvaluationResult`.
+   **Budget ~2 min for a ≤4-run voice batch; first poll at ~45 s, then every ~30 s.** Report the
+   duration from **`timeToComplete` (milliseconds)** — never from your own elapsed time, which includes
+   your waits and drifts far high. `duration: 0.0` on a run still `QUEUED`/`RUNNING` is normal and is
+   **not** a stalled run. Details: `commotion-run-evals/references/simulation-and-results.md`.
 
 **Pre-flight, or the run is worthless:** confirm the scenario's personality has **`voiceEnabled: true`**
 (`GET /personality`). A personality with `voiceEnabled: false` produces a **mute caller** — verified
@@ -291,8 +295,9 @@ Establish the draft and hold it as `<draft-version>`:
   /aiworker/<worker-id>/versions`, find the entry under `items` whose `status == DRAFT`, and edit that.
 
 Apply the smallest change that addresses the confirmed root cause, on the surface the failure class
-named — the mechanics are `commotion-improve-worker`'s, unchanged (prompt → **delete the agent + `POST
-/aiagent`**, never a bare `PUT`; tools → `POST /ai-worker-tool/…` then `[tool:<action>]` in the prompt;
+named — the mechanics are `commotion-improve-worker`'s, unchanged (prompt → **`PUT /aiagent/{id}`** with
+the full body, which renders in the UI and keeps the agent id so your repro scenario stays valid;
+tools → `POST /ai-worker-tool/…` then `[tool:<action>]` in the prompt;
 knowledge → attach + index, bind with `[knowledge:<name>|id:<id>]`; guardrails/fallback/voice →
 **full** `PUT /aiworker/{id}` resending every field you want to keep, plus `version`).
 
@@ -300,7 +305,8 @@ knowledge → attach + index, bind with `[knowledge:<name>|id:<id>]`; guardrails
 so the pass-rate change is attributable.
 
 > ⚠ **After a delete + re-POST of an agent, re-point the repro scenario or Phase 5 cannot even start.**
-> The re-POST assigns a **new `aiAgentId`**, and the scenario still stores the old one, so
+> Prompt fixes go through `PUT` and don't trigger this; an **agent-type change** or a deliberate agent
+> replacement still does. The re-POST assigns a **new `aiAgentId`**, and the scenario still stores the old one, so
 > `POST /simulation/run` returns `500 Simulation trigger failed. Please try again.` — which looks exactly
 > like the known transient flake and is not. Verified live. Fix: `GET /aiagent?workerId=…&version=<draft>`
 > for the new id, then `PUT /scenario/<repro-scenario-id>` with it. See `references/repro-and-gates.md`
@@ -388,8 +394,18 @@ loops at once.
 
 - **Reproduce before you fix.** A fix chosen from a transcript is a guess. The must-fail-first gate is
   what makes the must-pass gate mean anything.
-- **Quote, don't paraphrase.** Every RCA claim carries the turn, the `result`, or the metric that proves
-  it, and the endpoint it came from. If you can't quote it, you haven't established it.
+- **Quote, don't paraphrase — except upstream vendor names.** Every RCA claim carries the turn, the
+  `result`, or the metric that proves it, and the endpoint it came from. If you can't quote it, you
+  haven't established it. **The one redaction: never surface the third-party identifiers behind
+  Commotion's first-party models.** This plane swaps the upstream vendor in for the `commotion` prefix
+  — `qwen3.6-35b` for `commotion-3.6-35b`, `gemma-4-31b-it` for `commotion-4-31b-it`, `qwen3-omni` for
+  `commotion-omni`, plus `openai/qwen3-next` in litellm errors and `krisp` for noise cancellation. Map
+  each back to its Commotion name (the worker's own config is the source of truth for that name), in
+  prose *and* in quoted errors and log lines.
+  Redacting the model token costs no diagnostic value: *"an `AuthenticationError` on the worker's LLM
+  credential"* proves the same thing. **BYOK is the opposite** — a provider the customer supplied the
+  key for (`isThirdParty: true`, a real `credentialId`) should be named plainly. Mapping table and the
+  ownership test: `references/call-analyzer-api.md` ("Never surface Commotion's upstream vendors").
 - **A rate, never a verdict.** `3/4 pass`. One voice run false-passes often enough that a bare "fixed"
   is misinformation.
 - **Truncated evidence is not evidence.** When `commotion_analyzer` reports `truncated`, re-query

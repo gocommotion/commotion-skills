@@ -32,10 +32,9 @@ different Settings surface and live in `knowledge-and-rag.md`.)
    state variable via the mention token **`[var:<title>]`** in `instructions` (same family as
    `[tool:…]` / `[knowledge:…]`). Defining the schema entry just makes the variable *available*; the
    agent only uses it if its prompt references it. **Bind it the Phase-6 way:** compose the `[var:…]`
-   token into the agent's `instructions` and **(re-)`POST /aiagent`** so the prompt renders/edits in the
-   UI — a plain `PUT` writes the runtime `instructions` but leaves the UI editor **blank** (verified live
-   2026-07-21: a PUT on the auto-provisioned default rendered nothing in the editor; a fresh POST rendered
-   the prompt — see the POST-create rule in `agents-and-orchestration.md`). A **code-block tool** can also
+   token into the agent's `instructions` and **`PUT /aiagent/{id}`** (full body — `PUT` is a full
+   replace); the prompt renders/edits in the UI and the agent id is preserved (verified live 2026-08-07 —
+   see `agents-and-orchestration.md`). A **code-block tool** can also
    consume a state variable directly via its `stateVariables[]` (by the variable's `id`), not only the
    prompt token — see `tools-and-capabilities.md`.
 
@@ -140,7 +139,7 @@ POST /ai-worker-variable-schema  { workerId:<id>, version:0, title:"customer_int
    variableType:"TEXT", variableSource:"EXTRACTED", availability:"AUTO" }
    -> read body.id
 # then bind it: compose "... [var:customer_intent] ..." into the agent's instructions and
-#   (re-)POST /aiagent so it renders in the UI (a bare PUT updates the runtime only — Phase-6 rule)
+#   PUT /aiagent/<agentId> (full body) — it renders in the UI and keeps the agent id (Phase-6 rule)
 ```
 
 **Loaded, pre-loaded state variable (fetched from a tool at call start):**
@@ -175,11 +174,15 @@ On a fresh voice `SINGLE_AGENT` draft:
 
 ## Verified live (dev3, 2026-07-21 — workers `6a5f1014…fafa` + `6a5f1100…549f`, draft v0)
 
-- **UI visibility — PUT vs POST (confirmed).** A `PUT /aiagent/{id}` on the **auto-provisioned default**
-  agent set the runtime `instructions` but the UI prompt editor stayed **blank**. Deleting the default
-  and **`POST /aiagent`** with the same prompt **rendered it** in the editor — the `[var:…]` / `[tool:…]`
-  tokens show as **plain text** (not styled chips), but they're present and work. So the prompt-bearing
-  agent must be POST-created / re-POSTed; a bare `PUT` is runtime-only.
+- **UI visibility — PUT vs POST.** *(Superseded 2026-08-07 — see below.)* On this date a
+  `PUT /aiagent/{id}` on the **auto-provisioned default** agent set the runtime `instructions` while the
+  UI prompt editor stayed **blank**, and only a delete + `POST /aiagent` rendered it. The `[var:…]` /
+  `[tool:…]` tokens show as **plain text** (not styled chips) either way, but they're present and work.
+- **UI visibility — PUT now renders (verified live 2026-08-07, supersedes the point above).** A
+  `PUT /aiagent/{id}` renders the prompt in the UI editor — both on a never-POSTed default agent (chat
+  worker `PUT UI Test 20260807`) and as an overwrite of a POST-created agent's existing prompt (voice
+  worker `POST UI Test Voice 20260807`), both confirmed in the UI by a human. So `PUT` is the prompt-write
+  path; it keeps the `aiAgentId`, which delete + re-POST does not.
 - **Settings + tools render in the UI:** `customer_intent` shows under **Settings → State Variables**
   (Source *Extracted*, Availability *Auto*); `NPCL` under **Settings → Pronunciation Dictionaries**
   (Alias → `N-P-C-L`); the `intent_upper` code block under **Tools**.

@@ -197,9 +197,10 @@ Agents/config are editable only on a **draft**. Establish the draft version you'
 Then apply the diagnosed fixes on that draft version.
 
 Apply the diagnosed fixes using the **create-worker machinery** (don't reinvent it):
-- **Prompt** → **re-POST the agent** (delete + `POST /aiagent`) with the revised `instructions` so the
-  prompt renders/edits in the UI — the POST-create rule in agents-and-orchestration.md. A bare
-  `PUT /aiagent/{id}` updates the runtime only and leaves the UI editor blank; don't use it for the prompt.
+- **Prompt** → **`PUT /aiagent/{id}`** with the revised `instructions` (full body — resend name,
+  description, `agentType`, model config, triggers, or they reset). The prompt renders/edits in the UI
+  and the **`aiAgentId` is unchanged, so your scenarios keep working** — verified live 2026-08-07. This
+  replaces the old delete-and-re-POST rule; see agents-and-orchestration.md.
 - **Tools** → create on the draft (`POST /ai-worker-tool/...`) and reference by action name in the
   prompt — see tools-and-capabilities.md.
 - **Knowledge** → attach + index, bind in the prompt — see knowledge-and-rag.md.
@@ -214,7 +215,9 @@ Apply the diagnosed fixes using the **create-worker machinery** (don't reinvent 
   new `agentType`. A `PUT` that changes the type is rejected: *"Cannot change agent type…"*.
 
 > ⚠ **After any delete + re-POST, re-point your scenarios or Phase 3 cannot even start** (verified live
-> 2026-07-28). The re-POST assigns a **new `aiAgentId`**, and every scenario still stores the old one, so
+> 2026-07-28). Since prompt edits now go through `PUT`, this should only bite you on an **agent-type
+> change** or a deliberate agent replacement — but when it does bite, it is silent. The re-POST assigns a
+> **new `aiAgentId`**, and every scenario still stores the old one, so
 > `POST /simulation/run` returns `500 Simulation trigger failed. Please try again.` — indistinguishable
 > from the known transient flake, and retrying never clears it. Fix: read the new id from
 > `GET /aiagent?workerId=<worker-id>&version=<draft-version>`, compare it to each scenario's `aiAgentId`
@@ -226,7 +229,8 @@ Apply the diagnosed fixes using the **create-worker machinery** (don't reinvent 
 > failed: agentType is required."*), and you read it back as **`aiAgentType`** — the `agentType` key
 > itself is `null` in every response. `DELETE /aiagent/{id}` needs `?version=`. Both are already spelled
 > out in `commotion-create-worker/references/agents-and-orchestration.md`; the new part is only that a
-> re-POST inside *this* loop invalidates the scenarios.
+> re-POST inside *this* loop invalidates the scenarios. **The cheapest way to avoid all of this is to
+> not re-POST** — `PUT` handles prompt edits and keeps the id.
 
 **Show every edit before making it.** Make the smallest set of changes that addresses the round's
 failures (so you can attribute the pass-rate change to them — see the regression guard).
@@ -243,6 +247,10 @@ Point the test set at the draft version and re-run, reusing `commotion-run-evals
   websocket layer and runs fail with connection errors; for a larger set, run sequential batches of ≤4
   and aggregate (see `commotion-run-evals`). Poll `GET /simulation/{id}` to COMPLETED and read the new
   `passRate`. This becomes the round's result and the next round's `<sim-id>`.
+  **A ≤4-run voice batch takes ~2 min** — first poll at ~45 s, then every ~30 s, and quote the duration
+  from **`timeToComplete` (ms)**, never your own elapsed time. `duration: 0.0` on a still-`RUNNING` run
+  is normal, not a stall. `passRate`'s denominator is **decided** runs, so report it as "X% (n of N
+  decided)". Never abandon a round and tell the user to run it in the UI.
 
 ## Phase 4 — Loop control (the decision each round)
 

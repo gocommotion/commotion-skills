@@ -84,8 +84,12 @@ Never invent field names or values. Read the contracts from the server first:
 2. `commotion_request` `{ "method": "GET", "path": "/aiworker/metadata" }` → valid *values* and
    defaults (`agentSetupType` options; `guardrailConfig` toxicity categories/ranges + PII behaviours;
    `llmConfig` retry range). Top-level keys: `voiceConfig`, `guardrailConfig`, `workerConfig`, `llmConfig`.
-3. `commotion_request` `{ "method": "GET", "path": "/aimodel" }` → valid model / provider codes — for
-   the voice block **and** for the primary + fallback models (Phase 3).
+3. `commotion_request` `{ "method": "GET", "path": "/aimodel?pageSize=200" }` → valid model / provider
+   codes — for the voice block **and** for the primary + fallback models (Phase 3).
+   ⚠ **`pageSize` is not optional.** `/aimodel` paginates at ~10 rows, and the bare call returns **10
+   junk `azure_openai` test rows and zero Commotion models** (verified live 2026-08-06) — which reads
+   falsely as "this workspace has no Commotion models, so I must pick a third party." The paged call
+   shows `commotion-3.6-35b` (`isDefault: true`), `commotion-4-31b-it`, `commotion-3.6-27b`.
 
 For the agent body fields (`AiAgentRequest`), see `references/agents-and-orchestration.md`; for
 attaching source material / FAQ grounding, see `references/knowledge-and-rag.md`; for guardrails,
@@ -128,12 +132,11 @@ the work genuinely is a single responsibility. **When you're unsure how to split
 Tell the user which you chose and why. (Setup type is changeable later, but only while the worker is
 a draft — see the lifecycle reference.)
 
-Choose the setup type purely on the **use case** (above) — prompt visibility no longer forces the
-choice. In **both** setups you make the prompt UI-visible the same way: by **`POST`-creating** the
-prompt-bearing agent (only POSTed agents render in the editor; a PUT-updated default stays blank). The
-only difference is freeing the slot (Phase 6): for `SINGLE_AGENT`, **delete the auto-default then POST**
-the one agent; for `MULTI_AGENT`, disable the default and POST each specialist. See
-`references/agents-and-orchestration.md` ("POST-create the prompt-bearing agent").
+Choose the setup type purely on the **use case** (above) — prompt visibility doesn't constrain it.
+Both `POST` and `PUT` put a UI-visible prompt on an agent (verified live 2026-08-07), so the only
+difference in Phase 6 is agent count: `SINGLE_AGENT` **`PUT`s the auto-provisioned default**;
+`MULTI_AGENT` repurposes the default as the first specialist and **`POST`s** the rest. See
+`references/agents-and-orchestration.md`.
 
 **Structured output** is a `SINGLE_AGENT` variant: when the goal is to **return a strict, parseable
 shape** for a downstream system to consume (not hold a conversation), set `structuredOutputEnabled:
@@ -214,14 +217,21 @@ Build a candidate `AiWorkerRequest` grounded in Phase 0. Hold it as the `body` y
   `advancedSettingsRequest.languageModelSettingsRequest` — so they're always visible/editable in the UI
   (editing an agent needs the worker in DRAFT). Get codes from `/aimodel`. See
   `references/control-and-reliability.md`.
-  **Provider rule — always `commotion`.** Pick a Commotion first-party provider for LLM **and** TTS
-  **and** STT: non-Commotion providers (openai/anthropic/cerebras/vayu, eleven-labs/cartesia/sarvam/
-  smallest-ai) require a client provider credential that **no API field can carry** for these blocks, and
-  the backend accepts them anyway with `200` and no warning — leaving a saved-but-unrunnable
-  provider+model with a blank Credential. Never set a provider/model pair you cannot also credential;
-  if the user wants an external provider, tell them it is UI-only and leave the block on Commotion.
-  Details + the field-by-field credential table: `references/aiworker-lifecycle.md` ("Providers and
-  credentials").
+  **Provider rule — always `commotion`, and a Commotion provider needs no credential.** Pick a
+  Commotion first-party provider for LLM **and** TTS **and** STT. A first-party provider's key comes
+  from the platform environment, so its credential resolves automatically — **there is no credential
+  for you to choose, and "Commotion" is never a credential to attach to someone else's provider.**
+  Credentials are a **BYOK-only** concept (the schema calls `credentialId` *"Credential ID for BYOK
+  (Bring Your Own Key) support"*) and exist on only two blocks: the fallback LLM and the
+  simulator/eval-metric LLM. The third-party providers (openai/anthropic/cerebras/vayu/azure_openai,
+  eleven-labs/cartesia/sarvam/smallest-ai) need a client credential that **no API field can carry** for
+  STT/TTS/primary-LLM, and the backend accepts them anyway with `200` and no warning — leaving a
+  saved-but-unrunnable provider+model whose Credential is blank or bound to the wrong thing. Verified
+  live 2026-08-06: a `PUT` setting STT `provider: "eleven-labs"` returned `200` with the third-party
+  provider round-tripped and no credential field anywhere in the response. So: **check
+  `isThirdParty` in `GET /aiworker/metadata` before writing any provider**, and if the user wants an
+  external one, tell them it is UI-only and leave the block on Commotion. Details + the field-by-field
+  credential table: `references/aiworker-lifecycle.md` ("Providers and credentials").
 - **Every agent needs its own primary model — `modelConfigurationRequestList`** (top-level on
   `AiAgentRequest`, `[{id, modelCode, providerCode}]` with all three keys). Applies to **voice and SO
   agents too**, not just chat: agents do **not** inherit the worker's model, and an agent created without
@@ -276,52 +286,58 @@ instead of creating a duplicate.
 
 ## Phase 6 — Provision + enable the agent(s)  ← the step people miss
 
-Agents can only be created/edited while the worker is a **DRAFT**. **Golden rule (verified live):**
-the prompt only renders/edits in the UI for agents created via **`POST /aiagent`**. PUT-updating the
-auto-provisioned default sets `instructions` for the runtime but leaves the editor blank. So in BOTH
-setups you **POST** the prompt-bearing agent — the only difference is making room for it. List what's
-there first: `GET /aiagent?workerId=<worker-id>&version=0`.
+Agents can only be created/edited while the worker is a **DRAFT**. **Golden rule (verified live
+2026-08-07): `PUT /aiagent/{id}` writes the prompt and it renders in the UI editor** — into a blank
+editor *and* over an existing prompt. So write prompts with `PUT` and keep the agent id stable; a
+stable id is what stops scenarios (and anything else pinned to `aiAgentId`) from silently breaking.
+List what's there first: `GET /aiagent?workerId=<worker-id>&version=0`.
 
-- **`SINGLE_AGENT`** — delete the auto-default, then POST the real agent into the freed slot:
+- **`SINGLE_AGENT`** — `PUT` the auto-provisioned default; no delete, no re-POST:
   1. `commotion_request` `{ "method": "GET", "path": "/aiagent?workerId=<worker-id>&version=0" }` →
-     the default agent id is `body[0].id`.
-  2. `commotion_request` `{ "method": "DELETE", "path": "/aiagent/<default-id>?version=0" }`
-     (`version=0` is REQUIRED).
-  3. `commotion_request` `{ "method": "POST", "path": "/aiagent", "body": <the agent, aiAgentEnabled:true> }`
-     (body shape below).
+     the default agent id is `body[0].id` (grab its `modelConfigurationResponseList[0]` too).
+  2. `commotion_request` `{ "method": "PUT", "path": "/aiagent/<default-id>", "body": <the agent,
+     aiAgentEnabled:true> }` (body shape below).
 
-  (POSTing before the delete fails: `400 "Single Agent setup allows only one agent"`.) The POSTed
-  agent's prompt renders + is editable. Agent body: `{aiWorkerId, version:0, name, description,
-  agentType, instructions, aiAgentEnabled:true}`. The request `agentType` echoes back as `aiAgentType`
-  (the `agentType` key reads back `null` — that's normal; the type still sticks).
-- **`MULTI_AGENT`** — disable the auto-default (`PUT /aiagent/{defaultId}` `aiAgentEnabled:false`, or
-  delete it as above), then `POST /aiagent` each specialist with its own focused `instructions` +
-  `aiAgentEnabled:true`. The worker's `workerLevelPrompt` (Phase 3) is the orchestrator that routes to them.
+  The default is born with the right `agentType` for the worker's channel (`CHAT_AGENT` /
+  `VOICE_AGENT` / `STRUCTURED_OUTPUT`), so resend it unchanged — **`PUT` cannot change `agentType`**
+  (`400 "Cannot change agent type…"`); that one case still needs delete + re-POST.
+- **`MULTI_AGENT`** — `PUT` the default into your first specialist, then `POST /aiagent` each
+  additional one with its own focused `instructions` + `aiAgentEnabled:true` (only `POST` can *add*
+  agents). Disabling the default instead (`PUT` `aiAgentEnabled:false`) and POSTing every specialist is
+  equally fine. The worker's `workerLevelPrompt` (Phase 3) is the orchestrator that routes to them.
 
-Either way: **put the full prompt in the POSTed agent's `instructions`; keep `workerLevelPrompt`
-concise.** To later revise a POSTed agent's prompt, edit it in the UI (syncs the editor) or re-`POST`
-a fresh agent (delete/disable the old) — a plain `PUT` updates the runtime only and does **not** refresh
-the editor, so don't use it for the prompt.
+Agent body (same for `PUT` and `POST`): `{aiWorkerId, version:0, name, description, agentType,
+instructions, aiAgentEnabled:true, modelConfigurationRequestList}`. **`PUT` is a full replace — resend
+every field you want to keep**, not just `instructions`. The request `agentType` echoes back as
+`aiAgentType` (the `agentType` key reads back `null` — that's normal; the type still sticks).
 
-**Structured-output agent (strict parseable shape).** If you set `structuredOutputEnabled: true`
+Either way: **put the full prompt in the agent's `instructions`; keep `workerLevelPrompt` concise.** To
+later revise it, `PUT` again — repeat `PUT`s overwrite the editor correctly, so there is no reason to
+delete and re-POST for a prompt change. (POSTing a second agent into a `SINGLE_AGENT` worker still fails
+`400 "Single Agent setup allows only one agent"`.)
+
+**Structured-output agent (strict parseable shape).** ⚠ It needs its **own worker** — the flag is
+mutually exclusive with voice and single-agent-only, so a `STRUCTURED_OUTPUT` agent cannot sit beside
+other agents (verified live 2026-08-07: `POST /aiagent` on a voice `MULTI_AGENT` worker → `400
+"Structured output is not enabled on the associated worker"`). If you set `structuredOutputEnabled: true`
 (Phase 3), the default agent is auto-born as **`STRUCTURED_OUTPUT`** (disabled) — verified live. Follow
-the **same delete-then-POST rule as any single-agent worker** so the prompt renders in the UI: delete
-the default, then `POST /aiagent` a fresh `STRUCTURED_OUTPUT` agent with `{instructions:"…extract into
-the schema, no prose…", aiAgentEnabled:true, structuredOutputConfig:{maxRetries, schemaFields:[…]}}`
-(verified live 2026-07-21: `POST /aiagent` accepts `STRUCTURED_OUTPUT` → 200; a `PUT` on the default
-sets the runtime but leaves the editor blank). The `schemaFields` shape (types, enums, nested objects,
-validation) is in `references/control-and-reliability.md` / `references/agents-and-orchestration.md`.
+the **same single `PUT` as any single-agent worker**: `PUT /aiagent/{defaultId}` with
+`{instructions:"…extract into the schema, no prose…", aiAgentEnabled:true,
+structuredOutputConfig:{maxRetries, schemaFields:[…]}}` — the type is already right, so nothing needs
+deleting. (`POST /aiagent` also accepts `STRUCTURED_OUTPUT` → 200, verified 2026-07-21, if you'd rather
+create a fresh one.) The `schemaFields` shape (types, enums, nested objects, validation) is in
+`references/control-and-reliability.md` / `references/agents-and-orchestration.md`.
 
 **FAQ agent (answers strictly from docs).** When the goal is "answer questions from this material —
-don't make things up," provision an **FAQ agent** (`agentType` `FAQ_CHAT`/`FAQ_VOICE`/`FAQ`). Two
+don't make things up," provision an **FAQ agent** — `agentType` **`FAQ_CHAT` or `FAQ_VOICE`** (the bare
+`FAQ` value is in the enum but **not creatable**, verified live 2026-08-07; so is `CUSTOM`). Two
 gotchas (verified live): FAQ types **must** be created with `POST /aiagent/standard`
 (`POST /aiagent` rejects them — only VOICE_AGENT/CHAT_AGENT/STRUCTURED_OUTPUT), and the standard
 agent is born **disabled with empty instructions** — follow up with `PUT /aiagent/{id}` to add
 strict-grounding `instructions` (*answer only from the attached knowledge; if it isn't there, say
-you don't know — never invent, no outside lookups*) and set `aiAgentEnabled: true`. **FAQ is the one
-exception to the POST-create rule:** `POST /aiagent` rejects FAQ types and `POST /aiagent/standard` has
-no `instructions` field, so FAQ instructions are **`PUT`-only** and the prompt **won't render in the UI
-editor** (it runs fine at runtime) — edit it in the UI if visibility is needed. An FAQ agent is
+you don't know — never invent, no outside lookups*) and set `aiAgentEnabled: true`. FAQ instructions
+are **`PUT`-only** (`POST /aiagent` rejects FAQ types and `/aiagent/standard` has no `instructions`
+field) — which is fine now that `PUT` renders in the UI editor. An FAQ agent is
 only useful once a knowledge base is attached and indexed (Phase 7). See
 `references/agents-and-orchestration.md` for the full pattern.
 
@@ -364,8 +380,8 @@ is ready before deploying**. Show the user what you're attaching before each wri
 **Then bind the KB to each grounded agent (required).** Worker-level attach alone does *not* make an
 agent use it — the agent's prompt must reference the KB. Over the API this is a mention token in the
 agent's `instructions`: `{..., instructions: "<prose telling it to search the knowledge base>\n\n
-[knowledge:<knowledge name>|id:<knowledgeId>]"}` — compose the token into the prompt and set it the
-**Phase-6 way** (POST-create / re-POST so it renders in the UI; a bare `PUT` writes the runtime only).
+[knowledge:<knowledge name>|id:<knowledgeId>]"}` — compose the token into the prompt and write it the
+**Phase-6 way** (`PUT /aiagent/{id}`, full body; it renders in the UI editor).
 There is no separate agent↔knowledge field. See `references/knowledge-and-rag.md` ("Binding knowledge
 to an agent").
 
@@ -406,8 +422,8 @@ The full per-kind recipes, body shapes, HITL, and the projection model are in
   (name only, no id; the action name comes from `GET /ai-worker-tool?aiWorkerId=…&version=…`'s
   `actionMetaDataOutputList[].actionName`, e.g. `lookup-order-189`). Same family as
   `[knowledge:<name>|id:<id>]`, `[agent:<name>|id:<id>]` (hand off to another agent), and `[var:…]`.
-  So: create on the worker, then add `[tool:…]` to the agent's `instructions` and set it the **Phase-6
-  way** (POST-create / re-POST so it renders in the UI; a bare `PUT` writes the runtime only) — that's
+  So: create on the worker, then add `[tool:…]` to the agent's `instructions` and write it the **Phase-6
+  way** (`PUT /aiagent/{id}`, full body; it renders in the UI editor) — that's
   how you scope a tool to a specific agent. See `references/tools-and-capabilities.md` ("Binding a tool
   to an agent").
 - **Built-ins:** the catalog defaults (`end_call`, `switch_language`) are **already configured** on
@@ -462,8 +478,8 @@ drop it.
   conversation (nothing else needed); **`LOADED`** = fetched from a tool and **requires `loadingStrategy`
   (`PRE_LOADING`/`DYNAMIC_LOADING`) + `toolReference`** (400 otherwise). The id comes back as **`id`**.
   **Creating a variable does not bind it** — the consuming agent must reference it in `instructions` as
-  `[var:<title>]`, composed into the prompt and (re-)`POST`ed per the Phase-6 POST-create rule (a bare
-  `PUT` writes the runtime only and leaves the UI editor stale). A `LOADED` variable's `toolReference`
+  `[var:<title>]`, composed into the prompt and written per the Phase-6 rule (`PUT /aiagent/{id}` with
+  the full body; it renders in the UI editor). A `LOADED` variable's `toolReference`
   points at a tool from Phase 8 (create that tool first); a code-block tool can also read a variable via
   its `stateVariables[]`.
 - **Pronunciation dictionary** (`/ai-pronunciation-dict`) — **optional, and usually *discovered from a
@@ -573,10 +589,16 @@ Editing the live worker means revert-to-draft → edit the agent at the new draf
 
 - Ground before you draft; never invent a field that isn't in the schema (`commotion_schema`).
 - A worker isn't usable until its agent is **enabled** — treat Phase 6 as mandatory, not optional.
-- **Always a Commotion provider for LLM / STT / TTS.** Non-Commotion providers need a credential no API
-  field can carry, and the backend saves them silently with a blank Credential. Never write a
-  provider/model you can't credential; if the user wants an external one, it's UI-only — say so and
-  change nothing.
+- **Always a Commotion provider for LLM / STT / TTS — and then there is no credential to pick.**
+  "Provider" and "credential" are not two choices: a **first-party Commotion provider takes its key
+  from the platform environment, so its credential is resolved automatically and is not yours to set**.
+  A credential only exists for **BYOK** — the schema says so (`credentialId`: *"Credential ID for BYOK
+  (Bring Your Own Key) support"*), and it appears on **only** the fallback-LLM and simulator-LLM blocks.
+  So never pair a third-party provider with a Commotion credential, and never write a third-party
+  provider into the STT/TTS/primary-LLM blocks at all: they have **no credential field**, the backend
+  accepts them with `200` and no warning, and the UI then renders a provider+model with a wrong or
+  blank Credential that cannot run. If the user wants an external STT/TTS/LLM, it's UI-only — say so and
+  change nothing. Details: `references/aiworker-lifecycle.md` ("Providers and credentials").
 - **Every agent carries its own `modelConfigurationRequestList`** (top-level, `{id, modelCode,
   providerCode}` from `/aimodel`) — chat, voice and SO alike. Agents inherit **nothing** from the worker's
   model choice, and mis-nesting this field inside `languageModelSettingsRequest` is dropped silently.

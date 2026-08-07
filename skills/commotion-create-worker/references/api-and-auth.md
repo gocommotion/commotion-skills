@@ -96,7 +96,7 @@ not here.**
 | GET | `/aiagent/{id}?version=N` | retrieve one agent | — |
 | POST | `/aiagent` | create agent on a draft worker | `AiAgentRequest` |
 | POST | `/aiagent/standard` | create a *standard* agent (e.g. FAQ) | `CreateStandardAgentRequest` |
-| PUT | `/aiagent/{id}` | enable/disable; sets runtime `instructions` but **not** the UI prompt (POST-create for a visible prompt) | `AiAgentRequest` |
+| PUT | `/aiagent/{id}` | update an agent in place (prompt, name, enable/disable, model) — **renders in the UI editor**; keeps the agent id. Full replace: resend kept fields | `AiAgentRequest` |
 | DELETE | `/aiagent/{id}?version=N` | delete an agent (`version` query param required) | — |
 
 ### Knowledge & files

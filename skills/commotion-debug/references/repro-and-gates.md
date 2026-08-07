@@ -148,9 +148,13 @@ fix you cannot verify.
 
 ### Trap 1 — delete + re-POST the agent **breaks every scenario pinned to it**
 
-`commotion-improve-worker` says to edit a prompt by **deleting the agent and re-POSTing** it (a bare
-`PUT /aiagent/{id}` updates the runtime but leaves the UI editor blank). That is correct at *build*
-time, and it is a **trap in this loop**, because the re-POST assigns a **new `aiAgentId`**, while your
+**First, the fix that avoids the trap entirely: edit prompts with `PUT /aiagent/{id}`.** It renders in
+the UI editor and keeps the `aiAgentId` (verified live 2026-08-07), so the repro scenario stays valid and
+nothing below applies. The old rule — delete the agent and re-POST it for a UI-visible prompt — is
+retired.
+
+The trap still bites when you re-POST for a reason `PUT` can't cover: **changing `agentType`** (immutable
+via `PUT`) or replacing the agent outright. The re-POST assigns a **new `aiAgentId`**, while your
 repro scenario still stores the old one. The next `POST /simulation/run` then fails with:
 
 ```
@@ -171,15 +175,14 @@ repro scenario still stores the old one. The next `POST /simulation/run` then fa
 still reported `version: 0`, yet the simulation ran fine at v1. So the scenario's stored `version` is
 not what binds it to a worker version; **`aiAgentId` is.**
 
-> **The tension this creates, stated honestly.** §3 says keep the repro scenario byte-identical between
-> Phase 3 and Phase 5 so the two rates are comparable. This trap forces you to mutate one field of it.
-> Re-pointing `aiAgentId` is the *minimum* change that keeps the run triggerable, and it does not touch
-> the caller script or the goal — so the rates stay comparable. Change nothing else, and say in the
-> report that you re-pointed it.
+> **The tension this used to create is gone.** §3 says keep the repro scenario byte-identical between
+> Phase 3 and Phase 5 so the two rates are comparable, and the old delete-and-re-POST rule forced you to
+> mutate one field of it. `PUT /aiagent/{id}` now does prompt edits with a UI-visible result and a stable
+> id, so the scenario stays untouched — **prefer `PUT` and change nothing.**
 >
-> The alternative — `PUT /aiagent/{id}` to preserve the id — keeps the scenario untouched but leaves the
-> prompt invisible in the UI editor, which the user will later see as an empty prompt. Prefer
-> delete + re-POST + re-point.
+> If a type change does force a re-POST, re-pointing `aiAgentId` is the *minimum* change that keeps the
+> run triggerable; it doesn't touch the caller script or the goal, so the rates stay comparable. Change
+> nothing else, and say in the report that you re-pointed it.
 
 ### Trap 2 — a mute tester bot (`personality.voiceEnabled: false`)
 

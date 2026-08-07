@@ -53,25 +53,70 @@ these from `body`:
 
 | Field | Meaning |
 |---|---|
-| `status` / `statusLabel` | PENDING → COMPLETED (unconstrained string — gate on the counts, not a hard token) |
-| `passRate` | **the eval score — a percentage 0–100** (all-pass = `100.0`) |
-| `passCount` / `totalScenarios` / `completedScenarios` | the raw counts |
-| `avgLatencyInMillis` | avg agent latency (~650–740ms in tests) — populates on success |
+| `status` / `statusLabel` | PENDING → COMPLETED (unconstrained string — gate on the counts, not a hard token; verified terminal value is `COMPLETED` / `"Completed"`) |
+| `passRate` | **the eval score — a percentage 0–100** (all-pass = `100.0`). ⚠ denominator is **decided** runs — see below |
+| `passCount` / `totalScenarios` / `completedScenarios` | the raw counts. `completedScenarios` counts **any** terminal run, `FAILED` included |
+| `timeToComplete` | **the batch's end-to-end duration, in MILLISECONDS** — `75593` = 75.6 s. ✅ the only trustworthy duration; report this |
+| `executionTime` | seconds — an aggregate of per-run durations. ⚠ under-counts when a run errors. Populates while still PENDING, so useful **only** as a liveness check |
+| `totalExecutionTime` | seconds — same aggregate, same caveat. ⚠ don't present it as a duration |
+| `avgLatencyInMillis` | avg agent latency (~560–740ms in tests) — populates on success |
 | `avgQuality` | **stays `null`** — NOT wired to eval-metrics; ignore it as a quality signal |
 
-**Failure signature (verified):** a run that reaches `COMPLETED` almost instantly with
+**⚠ Timing is server-side — read it, never narrate your own polling wall-clock.** Three live voice
+batches, measured 2026-08-06:
+
+| | per-run `duration` | `timeToComplete` | `executionTime` | `totalExecutionTime` |
+|---|---|---|---|---|
+| A — 2 runs (1 pass, 1 error) | 53.04 + 75.49 | 75593 ms (75.6 s) | 64.27 (mean of both) | 128.53 (sum of both) |
+| B — 2 runs (1 pass, 1 error) | 51.99 + 71.81 | 69475 ms (69.5 s) | **51.99** | **51.99** |
+| C — 4 runs (3 pass, 1 error) | 62.82, 63.40, 63.53, 64.48 | 101876 ms (101.9 s) | 63.56 (mean of all 4) | 254.23 (sum of all 4) |
+| D — 4 runs (3 pass, 1 error) — **same worker + scenario as C** | ~54 s each | **374236 ms (6.2 min)** | 54.19 | 216.75 |
+
+Runs execute **concurrently**, so a batch costs far less than the sum — but it is **not** just the
+longest run either, and the overhead on top is **highly variable**. C and D are the *same* 4-run batch
+on the *same* worker and scenario, with near-identical per-run durations, yet D took **3.7× longer**
+end-to-end. **Budget 2–7 min for a ≤4-run voice batch and never infer a fault from elapsed time
+alone** — D finished at `passRate 100.0`.
+
+**Liveness, not the clock, tells you a batch is alive.** `totalExecutionTime` and `completedScenarios`
+both climb while work is happening — observed on D across successive polls: `totalExecutionTime`
+105.9 → 154.2 → 216.8 while `completedScenarios` went 2 → 3 → 4. Suspect a stall only when **both are
+frozen across several consecutive polls spanning 10+ minutes.**
+
+The two `*ExecutionTime` fields are **not consistent**: A and C included their errored run in both
+aggregates, B silently dropped it and reported only the passing run's 51.99 s for both. It is a race
+on whether a run has posted its duration by aggregation time, so an errored run may or may not be
+counted. Treat them as an aggregate-of-whatever-had-posted and **never** as a duration to report.
+
+An agent's own elapsed-time estimate includes its waits and retries and drifts wildly high — reporting
+tens of minutes for a batch whose `timeToComplete` is ~70 s is a reporting defect, not a slow platform.
+
+**⚠ `passRate`'s denominator is decided runs (verified live 2026-08-06).** A 2-run batch with one
+`PASS` and one `Simulation Error` returned `passRate: 100.0`, `passCount: 1`, `totalScenarios: 2` —
+1/1 decided. The backend already drops undecided runs, so **don't recompute the percentage**; just
+report it as "X% (n of N decided)" so a 100% resting on one decided run can't read as a clean sweep.
+
+**Failure signature (verified):** a run that reaches a terminal state almost instantly with
 `avgLatencyInMillis: null` and `passRate 0.0` did **not** actually run — the scenario-runs FAILED. A
-genuine voice run takes minutes (several PENDING polls). The `/simulation/run` path is also
-**occasionally flaky** (same generic error) — retry a transient failure once.
+genuine voice run takes ~40–90 s. The `/simulation/run` path is also **occasionally flaky** (same
+generic error) — retry a transient failure once.
+
+**⚠ `duration: 0.0` on a `QUEUED`/`RUNNING` run is normal, not a stall.** Per-run `duration` is only
+written when the run reaches a terminal state; every in-flight run reads `0.0`. The near-zero-duration
+failure signature above applies **only to terminal runs**. Don't declare a batch stuck — or abandon
+it — because in-flight runs show `0.0`.
 
 **⚠ But that signature is ambiguous — do not read it as "the runs didn't happen" on its own**
 (verified live 2026-07-28). A simulation reported `COMPLETED`, `passRate 0.0`, `avgLatencyInMillis: null`
 while **all four of its calls existed** with 42–57-second durations and full transcripts: the number was
-`0.0` only because nothing could be *evaluated*. Discriminate on the **per-run `duration`** — near-zero
-means the runs really didn't happen; 40–60s means they ran and the evaluator failed (see below).
+`0.0` only because nothing could be *evaluated*. Discriminate on the **terminal per-run `duration`** —
+near-zero on a run that has *finished* means it really didn't happen; 40–90 s means it ran and the
+evaluator failed (see below). On a run still `QUEUED`/`RUNNING`, `duration` is always `0.0` and tells
+you nothing.
 
 **⚠ A `500 Simulation trigger failed. Please try again.` is not always transient.** If the worker's agent
-was deleted and re-POSTed (the prompt-edit path), the scenario still stores the **old `aiAgentId`** and
+was deleted and re-POSTed (an agent-type change, or a replacement — prompt edits now go through `PUT`,
+which keeps the id), the scenario still stores the **old `aiAgentId`** and
 every trigger will 500 until the scenario is re-pointed. Check
 `GET /scenario/<id>` → `aiAgentId` against `GET /aiagent?workerId=…&version=…` before retrying.
 

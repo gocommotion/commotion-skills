@@ -42,6 +42,54 @@ thrown** — read the status and adjust.
   window, a line filter) rather than reasoning from the fragment that survived. `dropped` names exactly
   which list was shortened and by how many.
 
+## ⚠ Never surface Commotion's upstream vendors — this plane leaks them (verified live 2026-08-06)
+
+**This is the canonical rule for every Commotion skill.** Commotion's first-party models are served
+under Commotion names (`commotion-3.6-35b`, `commotion-omni`, `commotion-laya-v1-5`, "Commotion
+Guard"). Internally they run on third-party bases, and **the Call Analyzer plane reports those
+internal identifiers, not the Commotion names.** Repeating them to a customer discloses Commotion's
+supply chain. Verified on one live call:
+
+| Where it appears | What the plane returns | What you say instead |
+|---|---|---|
+| `usageStats.llm_usage_by_model[].model` | `qwen3.6-35b` | `commotion-3.6-35b` |
+| `usageStats.llm_usage_by_model[].model` | `gemma-4-31b-it` | `commotion-4-31b-it` |
+| `usageStats.llm_usage_by_model[].provider` | `CommotionLLMService#524` | Commotion |
+| `stt_segment_audio[].sttModel` | `qwen3-omni` | `commotion-omni` |
+| `usageStats.audio_processing_by_model[].model` | `krisp` (vad / noise_filter) | Commotion noise cancellation / VAD |
+| litellm errors in `errors[]` and `/logs` | `openai/qwen3-next`, `sk-…` | "the workspace's default Commotion model" |
+| guardrail config | `toxicityDetectionModel: "QWEN3_GUARD"` | "Commotion Guard" (the UI's own label) |
+| `tts_usage_by_model[].model` | `commotion-laya-v1-5` | *(already clean — TTS is the exception)* |
+
+**The pattern, so you can map a name this table doesn't list.** The analyzer substitutes the upstream
+vendor for the `commotion` prefix and otherwise keeps the model string: `commotion-3.6-35b` →
+`qwen3.6-35b`, `commotion-4-31b-it` → `gemma-4-31b-it`, `commotion-omni` → `qwen3-omni`. So **any
+model name on this plane that does *not* start with `commotion-` while the worker's config says it
+should is an upstream identifier — map it back to whatever the worker's own
+`workerLLMConfigurationResponse` / `workerTranscriptConfiguration` calls it.** That config read is the
+authoritative source for the customer-facing name; never invent one.
+
+**The rule.** Map every model/provider identifier back to its Commotion-facing name before it reaches
+the user — in prose, tables, quoted errors and quoted log lines alike. The `commotion-*` codes on the
+**BE plane** (`/aiworker`, `/aimodel`, `/aiworker/metadata`) are already the customer-facing names and
+are always safe to quote; it is the **analyzer plane and the pipeline logs** that carry the upstream
+names. When you must quote an error verbatim for accuracy, redact the model token: *"an
+`AuthenticationError` on the worker's LLM credential"* carries the whole diagnosis without the vendor.
+
+**⚠ BYOK is the opposite case — name those providers freely.** When the *customer* brings their own
+key, the provider is theirs and naming it is required to be useful. Tell the two apart by ownership,
+not by whether the string looks like a vendor:
+
+| | First-party Commotion | BYOK (customer's own) |
+|---|---|---|
+| How to spot it | `/aiworker/metadata` → `isThirdParty: false`; provider label "Commotion"; `AiModelResponse.credentialId` is null | `isThirdParty: true`; a real `credentialId` / `voiceProviderCredentialId` |
+| Examples | `commotion` (LLM), `commotion-tts`, `commotion-llm` / `commotion-asr` (STT) | `azure_openai`, `openai`, `anthropic`, `eleven-labs`, `cartesia`, `sarvam`, `smallest-ai` |
+| Naming | **Commotion names only** | **Name them plainly** — "your Eleven Labs credential", "your Azure OpenAI `gpt-4o-india`" |
+
+A simulated caller's voice is BYOK by design (personalities carry `voiceProvider: eleven-labs` with a
+real `voiceProviderCredentialId`), so "the tester bot speaks through your Eleven Labs voice" is correct
+and useful. "The worker's brain is qwen3.6-35b" is not.
+
 ## Payload sizes — read this before your first call
 
 Measured on a **28-second** call. A five-minute call is proportionally larger.

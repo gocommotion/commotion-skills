@@ -263,18 +263,16 @@ don't know - never guess, no outside knowledge.
 ```
 
 Compose it into the agent's `instructions` — `{..., instructions: "<prose>\n\n[knowledge:<name>|id:<id>]"}`
-— and set it the **Phase-6 way** (POST-create / re-POST so it renders in the UI; a bare `PUT` writes the
-runtime only — see the note just below on runtime-vs-editor).
+— and write it the **Phase-6 way** (`PUT /aiagent/{id}` with the full body; it renders in the UI editor).
 The `<knowledgeId>` is the id returned by the bulk create / list; `<name>` matches the item's `name`.
 The token is byte-identical to what the UI's `/Knowledge` command stores in `instructions`, and
 round-trips intact via the API.
 
-**Note (verified live):** bind the token by composing it into the **POST-created** agent's
-`instructions` (the required POST-create rule — see `agents-and-orchestration.md`). It renders in the
-editor as **plain text** rather than a styled Knowledge chip — cosmetic only; grounding works at runtime
-(a Test-Agent run answered correctly from the document). But a `PUT` on the auto-provisioned default
-agent sets the runtime `instructions` while the editor stays **blank** (verified 2026-07-21) — so don't
-rely on `PUT` to place the prompt; POST-create (or re-POST) the prompt-bearing agent so it's visible in the UI.
+**Note (verified live):** `PUT` places the prompt *and* the token visibly — verified 2026-08-07 that a
+`PUT /aiagent/{id}` renders in the UI prompt editor, into a blank editor and over an existing prompt
+alike (this replaces the older 2026-07-21 finding that a PUT left the editor blank). The token renders as
+**plain text** rather than a styled Knowledge chip — cosmetic only; grounding works at runtime (a
+Test-Agent run answered correctly from the document).
 
 ## Knowledge settings — indexing / embedding / chunking (`km-setting`, verified live)
 

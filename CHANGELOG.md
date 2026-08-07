@@ -1,5 +1,77 @@
 # Changelog
 
+## 2026-08-07 — 1.6.0 — `PUT /aiagent/{id}` renders in the UI: the delete-and-re-POST rule for prompts is retired
+
+The platform's prompt editor now reflects a `PUT`, which reverses the single most invasive rule in these
+skills. Since 1.0 every skill said an agent's prompt only renders in the UI if the agent was **created**
+via `POST /aiagent`, so a prompt edit meant *delete the agent and re-POST it* — which mints a **new
+`aiAgentId`** and silently breaks everything pinned to the old one (scenarios being the one that bit us,
+repeatedly). That cost is now unnecessary. Verified live against dev3 on 2026-08-07, both workers
+confirmed in the UI by a human:
+
+- **`PUT` into a blank editor populates it.** Chat worker `PUT UI Test 20260807` (`6a7566d1…28cb`): the
+  auto-provisioned "Chat Agent" was never deleted or re-POSTed — a single `PUT /aiagent/{defaultId}`
+  carrying `instructions` — and the prompt **rendered**. This is the exact case 1.x called impossible.
+- **`PUT` also overwrites an existing prompt.** Voice worker `POST UI Test Voice 20260807`
+  (`6a75680e…59fe`): default deleted → `POST /aiagent` with a prompt (rendered) → `PUT` with different
+  text → the editor **showed the new text**. So it isn't a fill-once behaviour and the editor doesn't go
+  stale. Both agents were then `PUT` a third time and tracked correctly.
+
+What changed in the skills:
+
+- **Prompt writes are `PUT /aiagent/{id}` everywhere** — `commotion-create-worker` Phase 6, plus the
+  `[tool:…]` / `[knowledge:…]` / `[var:…]` binding recipes in `tools-and-capabilities.md`,
+  `knowledge-and-rag.md` and `settings-variables-pronunciation.md`, which had all routed through the
+  POST-create rule. `PUT` is a **full replace**: resend `name`, `description`, `agentType`, model config
+  and triggers, not just `instructions`.
+- **`SINGLE_AGENT` is now one call, not three.** `PUT` the auto-provisioned default (its `agentType` is
+  already right for the channel) instead of GET → DELETE → POST. Same for the `STRUCTURED_OUTPUT`
+  variant. `MULTI_AGENT` repurposes the default as specialist #1 and POSTs the rest — only `POST` can
+  *add* agents.
+- **Delete + re-POST is now scoped to what `PUT` genuinely can't do:** changing `agentType` (still
+  immutable via `PUT` — `400 "Cannot change agent type…"`) or removing an agent. The `aiAgentId`-churn
+  warnings in `commotion-improve-worker`, `commotion-debug` (§4a Trap 1) and `commotion-run-evals` are
+  kept but re-scoped to those cases — and `repro-and-gates.md`'s stated tension between "keep the repro
+  scenario byte-identical" and "re-point `aiAgentId`" **dissolves**, because the prompt fix no longer
+  touches the id.
+- **The FAQ exception is retired.** FAQ instructions are still `PUT`-only (`POST /aiagent` rejects FAQ
+  types; `/aiagent/standard` has no `instructions` field) — that just isn't a visibility problem anymore.
+  Flagged as *not separately re-verified on an FAQ agent*: same `PUT` path, expected to behave the same.
+- The superseded 2026-07-21 findings are left in place in `settings-variables-pronunciation.md` and
+  `tools-and-capabilities.md`, marked as superseded with the new result beside them — they were correct
+  observations of a platform that has since changed, and the pairing is what makes the change legible.
+
+### Round 2 — every agent type, and a full deploy cycle (same day)
+
+A second live pass on workers `All Agent Types PUT Test 20260807` (voice, MULTI_AGENT) and
+`SO Agent PUT Test 20260807`, each state confirmed in the UI by a human. Five agents — `VOICE_AGENT`,
+`CHAT_AGENT`, `FAQ_CHAT`, `FAQ_VOICE`, `STRUCTURED_OUTPUT` — were written `HI` + a `[tool:…]` token,
+`PUT` to `Hello` + a `[knowledge:…]` token, deployed, then `PUT` again to `hey aarya` and redeployed.
+Every state rendered. Four further findings, all new:
+
+- **`PUT` visibility is not type-specific, and FAQ is no longer an exception.** Both `FAQ_*` types —
+  which can *only* be written by `PUT`, since `/aiagent/standard` has no `instructions` field — render
+  and re-render. 1.6.0's hedge ("not separately re-verified on an FAQ agent") is now discharged
+  directly, and the swap from a `[tool:…]` to a `[knowledge:…]` token showed the editor tracks a change
+  of mention-token family, not just prose.
+- **`FAQ` and `CUSTOM` are enum values with no create path.** Attempting all seven types on one worker:
+  `POST /aiagent` → `400 "Only VOICE_AGENT, CHAT_AGENT & STRUCTURED_OUTPUT agent type is supported."`;
+  `POST /aiagent/standard` → `400 "Only FAQ_CHAT & FAQ_VOICE agent type is supported."` Neither door
+  opens. The skills previously listed `FAQ` as creatable via `/aiagent/standard` alongside
+  `FAQ_CHAT`/`FAQ_VOICE` — **that was wrong** and is corrected in `agents-and-orchestration.md`
+  (new per-type creatability table) and the create-worker FAQ section.
+- **A `STRUCTURED_OUTPUT` agent needs its own worker.** It can't join a voice or multi-agent worker:
+  `400 "Structured output is not enabled on the associated worker. Enable structured output on the
+  worker first."`, and the flag itself is *"mutually exclusive with voice. Supported for Single Agent
+  and Workflow setups."* Hence the companion worker in this test.
+- **The deployed-worker edit cycle is id-stable, and old versions go `PAUSED`.** A live worker rejects
+  the edit (`400 "Agent can only be updated/deleted when worker is in draft status."`), so the cycle is
+  revert → `PUT` at the new version → redeploy. Reverting **preserved every `aiAgentId`** across all
+  five agents on both workers (only `createdDate` restamped), and after deploying v1 the history read
+  `[{v0, PAUSED}, {v1, LIVE}]` — a status the lifecycle reference didn't document (it said "superseded").
+  Together with `PUT` as the prompt path, **no routine operation churns an agent id anymore** — which
+  was the original worry that prompted this whole investigation.
+
 ## 2026-08-05 — 1.5.2 — The web crawler shipped: it is real, it lives on `km-setting`, and 1.5.1's "UI-only crawler" rule was wrong
 
 The backend added a **web crawler API**, which invalidates the headline claim of 1.5.1 below. The old
