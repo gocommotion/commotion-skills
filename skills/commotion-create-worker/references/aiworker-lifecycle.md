@@ -35,11 +35,23 @@ Editing something that is already **LIVE**:
 POST /aiworker/{id}/draft?version=0
         -> creates a NEW editable DRAFT version (e.g. v1) alongside the still-serving LIVE v0
 edit the draft (worker config and/or its agents) at that new version
-POST /aiworker/{id}/deploy?version=1  -> the draft becomes LIVE; the old version is superseded
+POST /aiworker/{id}/deploy?version=1  -> the draft becomes LIVE; the old version flips to PAUSED
 ```
 
-`GET /aiworker/{id}/versions` shows the history, one entry per version with its `status`
-(`LIVE` / `DRAFT`). Only **one draft can exist at a time** per worker.
+`GET /aiworker/{id}/versions` shows the history, one entry per version with its `status` —
+**`LIVE` / `DRAFT` / `PAUSED`**. Only **one draft can exist at a time** per worker.
+
+**The superseded version becomes `PAUSED`, not deleted (verified live 2026-08-07).** After deploying
+v1 on two workers, `GET /aiworker/{id}/versions` returned `[{version:0, status:"PAUSED"},
+{version:1, status:"LIVE"}]` on both. So version history accumulates and old versions stay readable
+(`GET /aiworker/{id}?version=0`) — don't read a `PAUSED` entry as a failed or rolled-back deploy.
+
+**⚠ The whole edit cycle preserves agent ids (verified live 2026-08-07).** Reverting a live worker to
+a draft carries each agent into the new version with its **`aiAgentId` unchanged** — confirmed across
+five agents of four different types on two workers (only `createdDate` was restamped). Combined with
+`PUT` as the prompt path, **no routine operation churns an agent id**: revert → `PUT` → redeploy is
+id-stable end to end, so scenarios, ACW references and anything else pinned to `aiAgentId` survive a
+version bump. (Delete + re-POST still mints a new id — that is the one thing that breaks the chain.)
 
 ## The edges
 
@@ -95,15 +107,31 @@ worker (it's rejected). Inspect the exact fallback field names with `commotion_s
 sub-blocks default. The full provider→model→language map lives in
 `GET /aiworker/metadata` → `voiceConfig.voicePipelineTypeConfig`.
 
-## Providers and credentials — use `commotion-*` only (verified live 2026-08-03)
+## Providers and credentials — pick the provider; the credential follows (verified live 2026-08-06)
 
-**Rule: over the API, always pick a Commotion first-party provider for TTS, STT and the LLM. Never set a
-non-Commotion provider, and never set a provider/model without its credential.**
+**The rule, in one line: choose a first-party Commotion provider for TTS, STT and the LLM — and then
+there is no credential to choose, because a first-party provider takes its key from the platform
+environment.**
 
-`GET /aiworker/metadata` → `voiceConfig` offers external providers (TTS: `eleven-labs`, `cartesia`,
-`sarvam`, `smallest-ai`; STT: `eleven-labs`, `sarvam`), and `/aimodel` offers `openai`, `anthropic`,
-`cerebras`, `vayu`. **Those all require a client provider credential, and the API gives you no way to
-attach one:**
+### Provider and credential are not two independent choices
+
+This is the distinction that gets inverted most often, so state it explicitly:
+
+- **First-party Commotion provider** → key comes from the platform env. The credential is resolved
+  **automatically** and is not a field you set. In the UI the Credential box fills itself in with
+  "Commotion"; over the API there is simply nothing to send.
+- **Third-party provider (BYOK)** → the *customer* supplied the key, so a `ClientProviderCredential`
+  must be bound. The schema is unambiguous about what a credential is for: `credentialId` is
+  *"Credential ID for **BYOK (Bring Your Own Key)** support."*
+
+**⚠ Therefore "Commotion" is never a *credential* to attach to somebody else's provider.** A block
+reading *Provider: Eleven Labs · Credential: Commotion* is always wrong — it pairs a third-party
+provider with a first-party key. If you find yourself selecting a credential at all for STT/TTS/LLM,
+you have already picked the wrong provider. Fix the **provider**, not the credential.
+
+### Which blocks can even carry a credential
+
+Only two, and both are BYOK-only by design:
 
 | Block | Schema | Credential field? |
 |---|---|---|
@@ -111,33 +139,75 @@ attach one:**
 | STT | `WorkerTranscriptConfigurationRequest` | **none** |
 | Voice LLM | `WorkerLLMConfigurationRequest` | **none** |
 | Worker primary LLM | `WorkerLanguageModelConfigurationRequest` | **none** |
-| Worker LLM *fallback* | `WorkerFallbackModelConfigurationRequest` | `credentialId` ✅ |
-| Agent LLM *fallback* | `FallbackModelConfigurationRequest` | `credentialId` ✅ |
-| Simulator / eval-metric LLM | `LLMConfig` | `voiceProviderCredentialId` ✅ |
+| Agent primary LLM | `ModelConfigurationRequest` | **none** |
+| Worker LLM *fallback* | `WorkerFallbackModelConfigurationRequest` | `credentialId` ✅ (BYOK) |
+| Agent LLM *fallback* | `FallbackModelConfigurationRequest` | `credentialId` ✅ (BYOK) |
+| Simulator / eval-metric LLM | `LLMConfig` | `voiceProviderCredentialId` ✅ (BYOK) |
 
 `AiModelResponse.credentialId` is documented as *"ID of the ClientProviderCredential this model is tied
-to. **Null for platform models**"*, and there is **no endpoint that lists or creates those credentials**
-(`/ai-worker-tool/credentials` is the SaaS-connector plane — unrelated). So a non-Commotion STT/TTS/LLM
-choice can only ever be written **credential-less**.
+to. **Null for platform models**"* — null for platform models is the same fact from the other side.
+There is **no endpoint that lists or creates those credentials** (`/ai-worker-tool/credentials` is the
+SaaS-connector plane — unrelated), so a third-party STT/TTS/primary-LLM choice can only ever be written
+**credential-less**, i.e. broken.
 
-**The backend does not stop you — that is the trap.** Verified live: a `PUT /aiworker` setting
-`provider: "eleven-labs"` for both TTS (`eleven_multilingual_v2`) and STT (`scribe_v2`) returned
-**`200` with no error and no warning**, and the round-tripped response contained **no credential field
-at all**. In the UI that renders as *Provider: Eleven Labs · Credential: "Select credential" (blank) ·
-Model: filled* — a saved-but-unrunnable config.
+### How to tell first-party from third-party — don't guess, read the flag
+
+`GET /aiworker/metadata` labels every voice provider explicitly. Check it before writing any provider:
+
+```
+voiceConfig.voicePipelineTypeConfig[].providerIdToProviderDropdownOutputMap
+  → { "commotion-tts": { "label": "Commotion",  "isDefault": true,  "isThirdParty": false },
+      "eleven-labs":   { "label": "Eleven Labs", "isDefault": false, "isThirdParty": true  }, … }
+voiceConfig.voicePipelineTypeConfig[].transcriptProviderList
+  → [ { "code": "commotion-llm", "label": "Commotion LLM", "isDefault": true  },
+      { "code": "commotion-asr", "label": "Commotion ASR", "isDefault": false },
+      { "code": "eleven-labs",   "label": "Eleven Labs",   "isDefault": false }, … ]
+```
+
+**`isThirdParty: false` is the only acceptable value for TTS, STT and the primary LLM.** For LLMs the
+equivalent tell is `providerCode: "commotion"` / `providerLabel: "Commotion"` with a null
+`credentialId`.
+
+> ### ⚠ Always call `/aimodel` with `pageSize` — the bare call hides every Commotion model
+>
+> **`GET /aimodel` is paginated and defaults to ~10 rows.** Verified live 2026-08-06: the bare call
+> returned **10 junk `azure_openai` test rows** (`test_model`, `gpt-go`, `a`, `b`, `d`, `hello`, …) and
+> **not one Commotion model** — which reads exactly like "this workspace has no Commotion models, so I
+> must use a third-party provider." That inference is wrong, and it is a direct path into the
+> credential-less trap above.
+>
+> **`GET /aimodel?pageSize=200`** returns the real catalogue: `commotion-3.6-35b` (**`isDefault: true`**),
+> `commotion-4-31b-it`, `commotion-3.6-27b` — alongside the BYOK `openai`, `anthropic`, `cerebras`,
+> `vayu` and `azure_openai` entries. **Never conclude a provider is unavailable from an unpaginated
+> list.** If you still can't find a first-party pair, read an existing worker's
+> `workerLLMConfigurationResponse` or an agent's default `modelConfigurationResponseList` instead.
+
+### The backend does not stop you — that is the trap
+
+Verified live 2026-08-06 on a real draft: a `PUT /aiworker` writing a third-party STT provider returned
+**`200`, no error, no warning**, round-tripped the third-party provider and model, and carried **no
+credential field anywhere in the response**. In the UI that renders as *Provider: <third party> ·
+Model: filled · Credential: blank or bound to the wrong key* — saved, and unrunnable. Nothing in the
+API response tells you this happened; only the `isThirdParty` check beforehand will.
 
 So:
-- **Do** use `commotion-tts` (TTS), `commotion-llm` / `commotion-asr` (STT), `commotion` (LLM). These are
-  platform models, need no credential, and are the only combination that works end-to-end over the API.
-  Verified-good trio: TTS `commotion-tts` / `commotion-laya-v1-5`; STT `commotion-llm` / `commotion-omni`;
-  LLM `commotion` / `commotion-3.6-35b` (the `isDefault: true` model in `/aimodel`).
-- **Don't** write a non-Commotion provider "to be fixed later", and **never backfill the model while
-  leaving the credential blank** — a half-set block is worse than an unset one, because the defaults no
+- **Do** use `commotion-tts` (TTS), `commotion-llm` (STT; `commotion-asr` is the other first-party
+  option), `commotion` (LLM). These are platform models, need no credential, and are the only
+  combination that works end-to-end over the API. Verified-good trio: TTS `commotion-tts` /
+  `commotion-laya-v1-5`; STT `commotion-llm` / `commotion-omni`; LLM `commotion` / `commotion-3.6-35b`.
+- **Don't** write a third-party provider "to be fixed later", and **never backfill the model while
+  leaving the credential unset** — a half-set block is worse than an unset one, because the defaults no
   longer apply and nothing flags it.
+- **Don't** reach for a credential to rescue a third-party provider. There is no credential field on
+  those blocks, and no endpoint to mint one.
 - If the user explicitly asks for ElevenLabs/Cartesia/Sarvam/OpenAI/Anthropic for STT/TTS/LLM: **say it
   must be done in the UI** (the credential can't be bound over the API), leave the block on Commotion
   or unset, and change nothing else. Only a **fallback** LLM can take a BYOK `credentialId`, and only
   when you already have that id — find it with `GET /aimodel?credentialId=<id>`.
+
+⚠ **Simulator personalities are the legitimate BYOK case** — a personality's caller voice carries
+`voiceProvider: "eleven-labs"` **with a real `voiceProviderCredentialId`**, and that is correct: it is
+the customer's own key, on a block that has a credential field. Don't "fix" it to Commotion.
 
 ## Choosing a voice — `GET /aiworkervoice` (the voice catalogue)
 

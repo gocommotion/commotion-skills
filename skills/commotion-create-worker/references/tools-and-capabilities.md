@@ -262,8 +262,8 @@ re-create. So don't attach a connector until a connected credential exists.
 Creating a tool attaches it to the **worker**, but an **agent only calls a tool its prompt
 references** — exactly like knowledge. In the agent prompt editor this is the **`/` command**
 ("Type / to add tools and more"); over the API it is a **mention token in the agent's `instructions`**
-(composed into the prompt and set the **Phase-6 way** — POST-create / re-POST so it renders in the UI;
-a bare `PUT` writes the runtime only). The tokens (all verified live):
+(composed into the prompt and written the **Phase-6 way** — `PUT /aiagent/{id}` with the full body; it
+renders in the UI editor). The tokens (all verified live):
 
 | What | Token | Has id? |
 |------|-------|---------|
@@ -281,17 +281,16 @@ your `name` used as-is (no numeric suffix), e.g. `[tool:format_policy_number]`. 
 
 ```
 GET /ai-worker-tool?aiWorkerId=<id>&version=<draft>        # find the action name(s)
-# compose the token into instructions and (re-)POST the agent so it renders in the UI:
-POST /aiagent  { …, instructions:
+# compose the token into instructions and PUT the agent (full body — PUT is a full replace):
+PUT /aiagent/<agentId>  { …, instructions:
   "…When the caller gives an order id, look it up.\n\n[tool:lookup-order-189]\n\n…" }
 ```
 
 Verified live: writing `[tool:lookup-order-189]` into an agent's `instructions` **round-trips intact and
-works at runtime** (a Test-Agent run called the tool), same as the `/Knowledge` token. A bare
-a bare `PUT /aiagent/{id}` sets the runtime `instructions` but the UI prompt editor won't reflect it — so
-**(re-)`POST` the prompt-bearing agent for UI visibility** (Phase-6 rule — **verified live 2026-07-21**:
-a PUT on the auto-provisioned default left the editor **blank**; a fresh POST **rendered** the prompt,
-with the `[tool:…]`/`[var:…]` tokens shown as **plain text**, not styled chips). **Only the agents whose
+works at runtime** (a Test-Agent run called the tool), same as the `/Knowledge` token. **`PUT` is enough
+for UI visibility too** — verified live 2026-08-07 that a `PUT` renders in the prompt editor, both into a
+blank editor and over an existing prompt (this replaces the older 2026-07-21 finding that a PUT left the
+editor blank). Tokens show as **plain text**, not styled chips — cosmetic only. **Only the agents whose
 prompt carries the `[tool:…]` mention call that tool** — that is how you scope a worker tool to a specific agent.
 Built-in actions (`end_call`, `transfer_to_human`, …) are referenced by their action name the same
 way; describe when to use them in the prose.
@@ -394,8 +393,8 @@ A real run that attached a custom tool + a built-in action and created an "Order
   (Note `mcpServerIdentifier`/`mcpServerUrl` stay empty for connectors either way — those belong to the
   external `mcp-server` tool type, not connectors; don't use them as the registration signal.)
 - **Binding** — embedding `[tool:lookup-order-189]` in the Order Concierge agent's `instructions`
-  round-tripped intact at the API, wiring the custom tool to that agent (for a UI-visible prompt,
-  POST-create the agent — a bare PUT is runtime-only). Token vocabulary across
+  round-tripped intact at the API, wiring the custom tool to that agent (`PUT /aiagent/{id}` is enough —
+  the prompt renders in the UI editor). Token vocabulary across
   the workspace (a 500-agent scan): `[tool:…]` ×540 (name only, no id), `[knowledge:…|id:…]` ×280,
   `[var:…]` ×390, `[agent:…|id:…]` ×90.
 - Error bodies are **XML** (`<LinkedHashMap>…`), not JSON. Tools attach only on the **draft** (v2);

@@ -108,9 +108,11 @@ Never invent field names or values. Read the contracts from the server first:
    these limits.
 3. `commotion_request` `{ "method": "GET", "path": "/scenario/intent-values" }` → existing intent tags
    (typeahead).
-4. `commotion_request` `{ "method": "GET", "path": "/aimodel" }` → valid provider/model codes for the
-   **simulator LLM** (`LLMConfig` on generate + run — the LLM that powers scenario generation and the
-   simulated caller).
+4. `commotion_request` `{ "method": "GET", "path": "/aimodel?pageSize=200" }` → valid provider/model
+   codes for the **simulator LLM** (`LLMConfig` on generate + run — the LLM that powers scenario
+   generation and the simulated caller). ⚠ **Pass `pageSize`** — the endpoint paginates at ~10 rows and
+   the bare call returns 10 junk `azure_openai` test rows with **zero Commotion models** (verified live
+   2026-08-06), which reads falsely as "no Commotion models here."
 
 ## Phase 1 — Identify the target worker + version  ·  HUMAN INPUT (only what's missing)
 

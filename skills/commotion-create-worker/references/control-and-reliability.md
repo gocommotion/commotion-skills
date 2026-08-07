@@ -3,8 +3,8 @@
 The worker-definition dials that make a worker customer-ready: **guardrails** (safety filters),
 **fallback models** (resilience), and **structured output** (strict parseable shape). All are fields
 on the `AiWorkerRequest` / `AiAgentRequest` — **no new tools**; you set them with `POST /aiworker` /
-`PUT /aiworker/{id}` (and, for the structured agent, delete the default + `POST /aiagent` so the prompt
-renders in the UI — see `agents-and-orchestration.md`). Ground the valid values in
+`PUT /aiworker/{id}` (and, for the structured agent, `PUT /aiagent/{defaultId}` with the prompt +
+`structuredOutputConfig` — see `agents-and-orchestration.md`). Ground the valid values in
 `GET /aiworker/metadata` (`guardrailConfig`, `llmConfig`) and `GET /aimodel`. (Structured output's
 agent side lives in `agents-and-orchestration.md`; this file is the worker-config side.)
 
@@ -141,27 +141,41 @@ Tested by deploying a worker and driving it through `POST /aiworker/run`, agains
 The **primary model and its fallback both exist for voice and chat — but in different blocks.** The
 trap is only `workerAdvancedSettingsRequest`: a voice worker rejects it.
 
-> ## ⚠ Provider rule: always Commotion for LLM / STT / TTS
+> ## ⚠ Provider rule: always Commotion for LLM / STT / TTS — and then no credential
 >
-> **Only a Commotion first-party provider can be fully configured over the API.** `commotion` (LLM),
-> `commotion-tts` (TTS), `commotion-llm` / `commotion-asr` (STT) are *platform models* — no credential
-> needed. Every other provider (`openai`, `anthropic`, `cerebras`, `vayu`, `eleven-labs`, `cartesia`,
-> `sarvam`, `smallest-ai`) is tied to a **ClientProviderCredential**, and:
+> **Pick the provider; the credential follows.** `commotion` (LLM), `commotion-tts` (TTS),
+> `commotion-llm` / `commotion-asr` (STT) are *platform models*: their key comes from the platform
+> environment, so **the credential is resolved automatically and is not a field you set.** A credential
+> exists only for **BYOK** — the schema defines `credentialId` as *"Credential ID for BYOK (Bring Your
+> Own Key) support."*
+>
+> **⚠ So "Commotion" is never a credential you attach to another vendor's provider.** *Provider: Eleven
+> Labs · Credential: Commotion* is always wrong — that pairs a third-party provider with a first-party
+> key. If you are choosing a credential at all for STT/TTS/LLM, the **provider** is what's wrong.
+>
+> Every third-party provider (`openai`, `anthropic`, `cerebras`, `vayu`, `azure_openai`, `eleven-labs`,
+> `cartesia`, `sarvam`, `smallest-ai`) is tied to a **ClientProviderCredential**, and:
 > - the **primary** LLM, TTS and STT request objects have **no credential field at all**;
 > - **no endpoint lists or creates** those credentials (`/ai-worker-tool/credentials` is the unrelated
 >   SaaS-connector plane);
-> - the backend **accepts the bad config silently** — `PUT /aiworker` with `provider: "eleven-labs"` for
->   TTS *and* STT returned `200`, no warning, no credential anywhere in the response (verified
->   2026-08-03).
+> - the backend **accepts the bad config silently** — a `PUT /aiworker` writing a third-party STT
+>   provider returned `200`, no warning, no credential anywhere in the response (verified 2026-08-03
+>   and again 2026-08-06).
 >
-> The result in the UI is *Provider: filled · **Credential: blank** · Model: filled* — saved and
-> unrunnable. **So: never set a non-Commotion provider, and never backfill a model when you cannot set
-> its credential** — leave the whole block on Commotion or unset. Only `credentialId` on a **fallback**
-> model (`WorkerFallbackModelConfigurationRequest` / `FallbackModelConfigurationRequest`) and
+> The result in the UI is *Provider: filled · **Credential: blank or bound to the wrong key** · Model:
+> filled* — saved and unrunnable. **Check `isThirdParty` in `GET /aiworker/metadata`
+> (`providerIdToProviderDropdownOutputMap`, `transcriptProviderList`) before writing any provider; only
+> `isThirdParty: false` is acceptable here.** Never backfill a model you cannot credential — leave the
+> whole block on Commotion or unset. Only `credentialId` on a **fallback** model
+> (`WorkerFallbackModelConfigurationRequest` / `FallbackModelConfigurationRequest`) and
 > `voiceProviderCredentialId` on `LLMConfig` (simulator / eval-metric LLM) accept one, and only if you
 > already hold the id — `GET /aimodel?credentialId=<id>` filters models to a given credential, and
-> `AiModelResponse.credentialId` is *"null for platform models"*. If the user wants an external provider
-> for STT/TTS/LLM, say it must be set in the UI and change nothing.
+> `AiModelResponse.credentialId` is *"null for platform models"*. ⚠ **Always call
+> `GET /aimodel?pageSize=200`** — the endpoint paginates at ~10 rows and the bare call returned **10
+> junk `azure_openai` test rows and zero Commotion models** (verified live 2026-08-06), which reads
+> falsely as "no Commotion models here, so I must go third-party". The paged call shows
+> `commotion-3.6-35b` (`isDefault: true`), `commotion-4-31b-it`, `commotion-3.6-27b`. If the user wants
+> an external provider for STT/TTS/LLM, say it must be set in the UI and change nothing.
 
 **Voice worker — set the LLM + fallback in the Voice Settings block, NOT advanced settings.** In the
 UI this is *Voice Settings → LLM Settings*: Provider, Model, **Fallback Provider / Fallback Credential
@@ -315,9 +329,9 @@ One `SINGLE_AGENT` worker created with all three dials → all round-tripped on
   `["acmerival","secretproject"]` — all four `…Response` blocks present *(old schema — see above)*.
 - Fallback: primary `commotion-medium`, fallback `gpt-4o-india`/`azure_openai`, `numberOfRetries:1`.
 - Structured output: `structuredOutputEnabled:true` → default agent auto-born `STRUCTURED_OUTPUT`
-  (disabled); delete the default + `POST /aiagent` a fresh `STRUCTURED_OUTPUT` agent with the
-  `schemaFields` schema (verified live: `POST /aiagent` accepts `STRUCTURED_OUTPUT` → 200, so the prompt
-  renders in the UI; a `PUT` on the default sets the runtime only). Schema round-trips intact.
+  (disabled); `PUT /aiagent/{defaultId}` with the prompt + `schemaFields` schema and
+  `aiAgentEnabled:true` — the type is already correct and the prompt renders in the UI. (`POST /aiagent`
+  also accepts `STRUCTURED_OUTPUT` → 200 if you'd rather create a fresh one.) Schema round-trips intact.
 
 Also on the **voice** multi-agent worker `6a379970421f279076ad4668` (draft v2): guardrails (toxicity
 in+out with custom thresholds, PII Commotion-mask, forbidden words) applied and round-tripped while the

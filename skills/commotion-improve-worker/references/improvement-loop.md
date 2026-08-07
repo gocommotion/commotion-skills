@@ -29,11 +29,16 @@ available"*). **Channel is not a constraint:** voice, chat and structured-output
 
 ## The pass-rate must be measuring the worker (check before every round)
 
-`passRate` is `passCount / totalScenarios`, so a run the **evaluator never scored** is counted as a
-non-pass and silently drags the rate down. Before treating a rate as a signal, confirm the runs behind it
-were decided — `scenarioEvaluationResult` of `PASS`/`FAIL`, not `ERROR` or `''`, and
-`scenarioRunStatusLabel` not `Evaluation Error` / `Simulation Error`. Verified live 2026-07-28: **0 of 8
-runs** were decided, producing a `passRate 0.0` indistinguishable from total failure.
+**`passRate`'s denominator is the *decided* runs, not `totalScenarios`** (verified live 2026-08-06: a
+2-run batch with one `PASS` and one `Simulation Error` reported `passRate 100.0`, `passCount 1`,
+`totalScenarios 2` — 1/1). So an unscored run does not drag the rate down; it **vanishes from the
+denominator**, which is the more dangerous failure — a flattering rate can rest on a single decided
+run. And when *nothing* is decided there is nothing to divide and the rate collapses to `0.0`,
+indistinguishable from total failure (verified live 2026-07-28: **0 of 8 runs** decided).
+
+Before treating a rate as a signal, count the runs behind it — `scenarioEvaluationResult` of
+`PASS`/`FAIL`, not `ERROR` or `''`, and `scenarioRunStatusLabel` not `Evaluation Error` /
+`Simulation Error`. Carry that count everywhere as "X% (n of N decided)".
 
 Consequences for loop control:
 

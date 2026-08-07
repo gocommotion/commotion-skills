@@ -77,16 +77,29 @@ A failing run reports only *"An error has occurred during simulation. Please con
 reference number …"* — with `duration 0.0` and `scenarioRunStatusLabel: "Simulation Error"`. That
 message says nothing about the channel. Verified live 2026-08-03: on the worker that produced it, the
 simulation had in fact started correctly and injected the scenario's `userScript` verbatim; the real
-cause was in the session's own error list —
+cause was in the session's own error list — a `litellm.AuthenticationError: Incorrect API key
+provided` naming the model the pipeline actually called,
 
-```
-litellm.AuthenticationError: Incorrect API key provided: sk-…  model: openai/qwen3-next
-```
-
-a **worker LLM credential fault**, not a channel limitation. Before concluding anything from a generic
+a **worker LLM credential fault**, not a channel limitation. ⚠ **That error text names the model by its
+internal upstream identifier, not its Commotion name — paraphrase it, never paste it to the user** (see
+"Never surface Commotion's upstream vendors" below). Before concluding anything from a generic
 simulation error, read the session: `commotion_analyzer { "path": "/api/chat/session/<scenario-run-id>" }`
 for a chat/SO run (`errors[]` + `runs[].error`), or `/api/calls?requestId=<scenario-run-id>` for voice.
 An earlier revision of this skill mis-generalised exactly this error into a false "voice-only" rule.
+
+### ⚠ Never surface Commotion's upstream vendors
+
+Commotion's first-party models are served under Commotion names, but the **Call Analyzer plane and the
+pipeline logs report the internal upstream identifiers instead** — the plane swaps the vendor in for the
+`commotion` prefix, so `commotion-3.6-35b` arrives as `qwen3.6-35b`, `commotion-4-31b-it` as
+`gemma-4-31b-it`, `commotion-omni` as `qwen3-omni`, plus `openai/qwen3-next` inside litellm errors and
+`krisp` for noise cancellation. Repeating any of them to a customer discloses Commotion's supply chain.
+**Map every model/provider name back to its Commotion-facing name before it reaches the user**, in
+prose and in quoted errors alike; the `commotion-*` codes on the BE plane are already customer-facing
+and safe. **BYOK is the opposite** — when the customer brought the key (`isThirdParty: true`, a real
+`credentialId`; e.g. their Eleven Labs personality voice or an Azure OpenAI fallback), name the
+provider plainly. Full mapping table and the tell-them-apart test:
+`commotion-debug/references/call-analyzer-api.md` ("Never surface Commotion's upstream vendors").
 
 ## When to use this
 
@@ -149,7 +162,10 @@ record's `version` from `body`). Then ground in the schema:
    already on the worker (don't re-create duplicates).
 3. `commotion_request` `{ "method": "GET", "path": "/scenario/dropdown-config" }` → `maxScenarioRunLimit`
    (cap on runs-per-scenario × scenarios) — respect it.
-4. `commotion_request` `{ "method": "GET", "path": "/aimodel" }` → provider/model codes for the **simulator LLM**.
+4. `commotion_request` `{ "method": "GET", "path": "/aimodel?pageSize=200" }` → provider/model codes for
+   the **simulator LLM**. ⚠ **Pass `pageSize`** — the endpoint paginates at ~10 rows and the bare call
+   returns 10 junk `azure_openai` test rows with **zero Commotion models** (verified live 2026-08-06).
+   The simulator `llm` must stay on a `commotion` provider, so you need the paged list to find one.
 
 ## Two evaluation surfaces (read before Phase 1 — verified live)
 
@@ -232,9 +248,75 @@ can contain raw newlines (parse tolerantly). Show each before writing. Full deta
 
 Repeatedly call `commotion_request` `{ "method": "GET", "path": "/simulation/<sim-id>" }` and read the
 headline numbers from `body` — `passRate`, `passCount` / `totalScenarios`, `avgQuality`,
-`avgLatency(InMillis)`, `completedScenarios` — until the run is genuinely terminal. A simulation runs
-scenarios sequentially and voice sims run real audio, so expect several polls where it's still
-in-progress; space them out rather than hammering the endpoint.
+`avgLatency(InMillis)`, `completedScenarios` — until the run is genuinely terminal.
+
+> ## ⏱ How long this takes, and where the duration comes from (verified live 2026-08-06)
+>
+> **Budget 2–7 minutes for a ≤4-run voice batch, and expect wide variance.** Measured end-to-end on
+> four live voice batches:
+>
+> | Batch | Per-run durations | `timeToComplete` |
+> |---|---|---|
+> | 2 runs | 53.0, 75.5 s | **75.6 s** |
+> | 2 runs | 52.0, 71.8 s | **69.5 s** |
+> | 4 runs | 62.8, 63.4, 63.5, 64.5 s | **101.9 s** |
+> | 4 runs — *same worker, same scenario, same 4 runs as above* | ~54 s each | **374.2 s (6.2 min)** |
+>
+> ⚠ **The last two rows are the same batch shape and they differed by 3.7×.** Per-run conversation
+> durations barely moved (~54–64 s each); the queueing and finalisation around them is what varies. So
+> **elapsed time alone never tells you a batch is broken** — a 6-minute ≤4-run batch is within normal
+> range and that one finished with `passRate 100.0`. Chat/SO batches are faster.
+>
+> Voice runs execute **concurrently**, so a batch costs far less than the sum of its runs, but it is
+> **not** simply the longest run either — there is queueing overhead on top, and that overhead is the
+> variable part.
+>
+> **Never narrate your own elapsed time — the server reports the duration, so read it.** Three fields
+> on `SimulationResponse` carry timing, and only one of them is trustworthy:
+>
+> | Field | Unit | Verified behaviour |
+> |---|---|---|
+> | `timeToComplete` | **milliseconds** | the batch's end-to-end duration — `75593` = 75.6 s. ✅ **This is the number to report.** |
+> | `executionTime` | seconds | ⚠ an aggregate over per-run durations, **unreliable** — see below |
+> | `totalExecutionTime` | seconds | ⚠ same aggregate, **unreliable** — see below |
+>
+> ⚠ **`executionTime` / `totalExecutionTime` silently under-count when a run errors.** Measured on two
+> batches of the same two scenarios: batch A had per-run durations `53.04 + 75.49` and reported
+> `executionTime 64.27` (their mean) / `totalExecutionTime 128.53` (their sum) — but batch B had
+> `51.99 + 71.81` and reported **`51.99` for both**, counting only the run that passed. The aggregate is
+> computed from whichever runs had posted a duration at aggregation time, so an errored run may or may
+> not be included. **Don't derive a duration from them, and don't present them to the user.** Use
+> `timeToComplete`; for per-run seconds read each `ScenarioRunResponse.duration` directly.
+>
+> A non-null `executionTime` on a still-`PENDING` sim does at least confirm **live progress** — that
+> much is safe to use as a liveness check while polling.
+>
+> **Your polling wall-clock is not the simulation's duration.** It includes your own waits, retries and
+> turnaround, and it will drift far above the real figure if you poll lazily. Reporting "this took 29
+> minutes" off your own clock when `timeToComplete` says 76 seconds is a reporting bug — it has caused
+> sessions to be abandoned and users told to "run it in the UI instead" on runs that had already
+> finished in under two minutes. **Quote `timeToComplete` (converted to seconds), never your own
+> elapsed time.**
+>
+> **Poll cadence:** first poll at **~45 s**, then every **~30 s**. Don't sleep for minutes between
+> polls, and don't hammer it either. A batch can legitimately need a dozen polls — that is normal and
+> is **not** a reason to stop.
+>
+> **⚠ `duration: 0.0` on a run whose `status` is `RUNNING` or `QUEUED` is normal** — the field is only
+> populated when the run reaches a terminal state. It is *not* evidence of a stuck or failed run. The
+> "near-zero duration = the run never happened" signature in `references/simulation-and-results.md`
+> applies **only to terminal runs**. Do not call a batch "stuck" because in-flight runs read `0.0`.
+>
+> **Judge "stuck" by progress, never by elapsed time.** A ≤4-run batch has been observed taking 6.2
+> minutes and finishing at `passRate 100.0`, so a clock alone proves nothing. The liveness signal is
+> **`totalExecutionTime` rising and/or `completedScenarios` advancing between polls** — both climb
+> steadily while work is happening (observed: `totalExecutionTime` 105.9 → 154.2 → 216.8 across polls
+> as `completedScenarios` went 2 → 3 → 4).
+>
+> Only suspect a genuine stall when **`completedScenarios` AND `totalExecutionTime` are both frozen
+> across several consecutive polls spanning 10+ minutes**. Then say so plainly with the numbers and read
+> the runs' `failureReason` / session errors — that is a platform fault to report, not a reason to hand
+> the task back to the user. **Never end a run-evals task by telling the user to go run it in the UI.**
 
 **Wait for evaluation to finish before reading `passRate` as final.** Each scenario-run passes through
 EVALUATION_* states *after* its conversation completes, and `passRate` isn't final until every run is
@@ -242,20 +324,31 @@ evaluated — so don't stop the moment the simulation looks done: confirm `compl
 totalScenarios` and no runs are still in an EVALUATION_* state (`commotion_request` `{ "method": "GET",
 "path": "/scenario-run?simulationId=<sim-id>" }`, checking each record's `status` in `body`) before
 trusting the number. (`SimulationResponse.status` is an unconstrained string — read `statusLabel` and
-the counts rather than matching a hard-coded token; confirm the live terminal label.) See
-`references/simulation-and-results.md` for the full status progression.
+the counts rather than matching a hard-coded token; the **verified terminal value is `COMPLETED`** /
+`statusLabel: "Completed"`.) ⚠ **`completedScenarios` counts runs that ended in *any* terminal state,
+including `FAILED`** — verified live: a 2-run batch reported `completedScenarios: 2` with one run
+`COMPLETED/PASS` and one `FAILED/Simulation Error`. So "all scenarios completed" means "nothing is
+still in flight", not "everything ran successfully". See `references/simulation-and-results.md` for
+the full status progression.
 
 `SimulationResponse.passRate` **is the eval score — a percentage 0–100** (verified live; an all-pass
-run returns `100.0`). Report it with the raw count (e.g. "6 of 10 passed = 60%") plus `avgQuality` and
-`avgLatency`. (Note: `avgQuality` is often `null` unless custom eval-metrics are defined — the
-scenario-goal PASS/FAIL is the signal that drives `passRate`.) A simulation runs scenarios
-sequentially — expect it to take a while (voice sims run real audio); poll at a sensible interval.
+run returns `100.0`). Report it with the raw count (e.g. "6 of 10 passed = 60%") plus `avgLatency` and
+the duration from `timeToComplete`. (Note: `avgQuality` is often `null` unless custom eval-metrics are
+defined — the scenario-goal PASS/FAIL is the signal that drives `passRate`.)
+
+> ⚠ **`passRate`'s denominator is *decided* runs, not `totalScenarios` (verified live 2026-08-06).**
+> A 2-run batch where one run passed and one came back `Simulation Error` (no verdict) reported
+> **`passRate: 100.0`, `passCount: 1`, `totalScenarios: 2`** — i.e. 1/1 decided, not 1/2. So the
+> backend already excludes undecided runs; **don't re-exclude them and don't recompute the percentage
+> yourself.** The corollary is the one that matters: a flattering `passRate` can rest on a single
+> decided run. **Always report it as "X% (n of N runs decided)"** — "100% (1 of 2 runs decided; 1
+> simulation error)" is the honest line, and it is a very different handoff than a bare "100%".
 
 > ## ⚠ Before you report `passRate`, check that the runs were actually evaluated (verified live)
 >
-> `passRate` is `passCount / totalScenarios` — and a run that the **evaluator failed to score** counts as
-> a non-pass. So a `0.0` can mean "the worker failed everything" **or** "nothing was scored", and those
-> demand opposite responses. Verified live 2026-07-28: across 8 runs on a deliberately broken worker,
+> When **no** run gets a verdict there is nothing to divide, and `passRate` collapses to `0.0`. So a
+> `0.0` can mean "the worker failed everything" **or** "nothing was scored", and those demand opposite
+> responses. Verified live 2026-07-28: across 8 runs on a deliberately broken worker,
 > **0 produced a usable verdict** — they came back with `scenarioEvaluationResult` of **`ERROR`** or an
 > **empty string** and `scenarioRunStatusLabel` of `Evaluation Error` / `Simulation Error`, on calls that
 > had run 40–60 seconds with complete transcripts. One observed cause is an evaluator-side bug:
